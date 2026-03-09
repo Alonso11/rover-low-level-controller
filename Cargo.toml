@@ -1,0 +1,28 @@
+[package]
+name = "rover-low-level-controller"
+version = "0.1.0"
+authors = ["alonso11"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "rover-low-level-controller"
+test = false
+bench = false
+
+[dependencies]
+panic-halt = "0.2.0"
+ufmt = "0.2.0"
+nb = "1.1.0"
+embedded-hal = "1.0.0"
+arduino-hal = { git = "https://github.com/rahix/avr-hal", features = ["arduino-mega2560"] }
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"

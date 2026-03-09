@@ -1,0 +1,6 @@
+# Ravedude.toml
+[general]
+board = "mega2560"
+serial-baudrate = 115200
+output-mode = "ascii"
+serial-port = "/dev/ttyUSB0"
