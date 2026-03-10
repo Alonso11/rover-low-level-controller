@@ -1,14 +1,13 @@
+//! Driver para el Puente-H L298N
+//! Este módulo implementa el control de motores DC utilizando el driver L298N.
+
 use arduino_hal::hal::port::{Pin, PinOps};
 use arduino_hal::hal::port::mode::{Output, PwmOutput};
 use arduino_hal::hal::simple_pwm::PwmPinOps;
+use crate::motor_control::Motor; // Importamos el trait desde mod.rs
 
-/// Define las acciones que cualquier motor del rover debe poder hacer
-pub trait Motor {
-    fn set_speed(&mut self, speed: i16);
-    fn stop(&mut self);
-}
-
-/// Implementación de un motor DC usando un puente H L298N
+/// Implementación del controlador para el driver Puente-H L298N.
+/// Requiere un pin PWM (ENA o ENB) y dos pines de salida digital (IN1/IN2 o IN3/IN4).
 pub struct L298NMotor<TC, PwmPin, In1Pin, In2Pin> {
     pwm: Pin<PwmOutput<TC>, PwmPin>,
     in1: Pin<Output, In1Pin>,
@@ -56,7 +55,6 @@ where
             self.in2.set_high();
         }
 
-        // Ahora que sabemos que Duty = u8, el cast a u32 funciona
         let max_duty = self.pwm.get_max_duty() as u32;
         let duty = ((abs_speed * max_duty) / 100) as u8;
         
