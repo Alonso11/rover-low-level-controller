@@ -1,72 +1,44 @@
 # Rover Low-Level Controller (Rust)
 
-Controlador de bajo nivel para un rover, desarrollado en Rust para el microcontrolador ATmega2560 (Arduino Mega).
+Controlador de bajo nivel para un rover, desarrollado en Rust para el microcontrolador ATmega2560 (Arduino Mega). Este proyecto utiliza una arquitectura de librería modular y principios SOLID.
 
 ## 🔌 Diagrama de Conexiones Completo (Arduino Mega)
 
-### 1. Motor de Alta Potencia (BTS7960) - Tracción Principal
-Este driver requiere pines PWM y pines de habilitación.
+### 1. Comunicación Raspberry Pi 5 (UART GPIO)
+Conexión directa entre los pines GPIO de la RPi5 y el Serial 1 (USART1) del Arduino Mega. Esto libera el puerto USB del Arduino para otros usos.
 
-| Pin BTS7960 | Pin Arduino Mega | Función en Software | Notas |
+| Conexión | Pin Arduino Mega | Pin RPi 5 | Función |
 | :--- | :--- | :--- | :--- |
-| **RPWM** | **D9** (PH6) | Forward PWM (Timer 2) | Control de velocidad adelante |
-| **LPWM** | **D10** (PB4) | Backward PWM (Timer 2) | Control de velocidad atrás |
-| **R_EN** | **D22** (PA0) | Right Enable | Habilitación del giro horario |
-| **L_EN** | **D23** (PA1) | Left Enable | Habilitación del giro antihorario |
-| **VCC** | **5V** | Lógica Power | Alimentación del chip del driver |
-| **GND** | **GND** | Ground | Tierra común con el Arduino |
-| **B+ / B-** | **BATERÍA** | Power Input | 7.4V - 24V externos |
-| **M+ / M-** | **MOTOR DC** | Motor Output | Salida al motor |
+| **RX1** | **D19** (PD2) | **GPIO 14** (TX) | Recibe de la Pi 5 |
+| **TX1** | **D18** (PD3) | **GPIO 15** (RX) | Envía a la Pi 5 |
+| **GND** | **GND** | **GND** | **¡Obligatorio unir tierras!** |
 
-### 2. Puente-H Estándar (L298N) - Motores Secundarios
-Configuración típica para dos motores (A y B).
+> ⚠️ **IMPORTANTE:** La RPi5 usa 3.3V. El Arduino Mega usa 5V. **Debes usar un divisor de tensión** en el cable que va del TX del Arduino (D18) al RX de la RPi5 para no dañar la Raspberry Pi.
 
-| Terminal L298N | Pin Arduino Mega | Función | Notas |
+### 2. Encoders de Motores (Fase A y B)
+Utiliza interrupciones externas para un conteo preciso de velocidad y dirección.
+
+| Motor | Pin Fase A (Interrupt) | Pin Fase B (Digital) | Función |
 | :--- | :--- | :--- | :--- |
-| **ENA** | **D9** (PH6) | PWM Motor A | Quitar jumper del L298N |
-| **IN1** | **D8** (PH5) | Dir 1 Motor A | Lógica de dirección |
-| **IN2** | **D7** (PH4) | Dir 2 Motor A | Lógica de dirección |
-| **ENB** | **D10** (PB4) | PWM Motor B | Quitar jumper del L298N |
-| **IN3** | **D6** (PH3) | Dir 1 Motor B | Lógica de dirección |
-| **IN4** | **D5** (PE3) | Dir 2 Motor B | Lógica de dirección |
+| **Derecho** | **D2** (PE4 - INT4) | **D24** (PA2) | Conteo Derecho |
+| **Izquierdo** | **D3** (PE5 - INT5) | **D25** (PA3) | Conteo Izquierdo |
 
-### 3. Servomotores (Dirección / Cámara)
-Utiliza control por software (50Hz) para evitar ruidos y calentamiento.
-
-| Cable Servo | Pin Arduino Mega | Función | Notas |
-| :--- | :--- | :--- | :--- |
-| **Naranja (Signal)**| **D11** (PB5) | PWM 50Hz | Control de posición |
-| **Rojo (VCC)** | **5V** | Power | Usar fuente externa si >1 servo |
-| **Marrón (GND)** | **GND** | Ground | Tierra común |
-
-### 4. Sensores de Distancia
-| Sensor | Pin Arduino Mega | Función | Notas |
-| :--- | :--- | :--- | :--- |
-| **HC-SR04 Trig** | **D12** (PB6) | Trigger | Pulso de disparo |
-| **HC-SR04 Echo** | **D13** (PB7) | Echo | Medición de tiempo |
-| **TF-Luna TX** | **RX0 (D0)** | UART RX | Recibe de la RPi5 / Sensor |
-| **TF-Luna RX** | **TX0 (D1)** | UART TX | Envía a la RPi5 / Sensor |
-
-### 5. Comunicación Raspberry Pi 5 (Yocto)
-| Conexión | Tipo | Notas |
+### 3. Actuadores (Motores y Servos)
+| Componente | Pines Arduino | Función |
 | :--- | :--- | :--- |
-| **Puerto USB-B** | **USB a RPi5** | Comunicación Serial @ 115200 baudios |
+| **BTS7960** | D9, D10 (PWM), D22, D23 (EN) | Tracción Alta Potencia |
+| **L298N** | D9, D8, D7 (Mot A), D10, D6, D5 (Mot B) | Alternativa Baja Potencia |
+| **Servo** | **D11** | Dirección (Software PWM 50Hz) |
 
----
+## 🛠️ Comandos de Ejecución
 
-## 🛠️ Comandos de Ejecución (Power User)
-
-**Probar Comunicación Serial (Echo):**
+**Probar Comunicación con Raspberry Pi 5:**
 ```bash
-RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_serial_echo --target avr-none -Z build-std=core
+RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_rpi_communication --target avr-none -Z build-std=core
 ```
 
-**Probar Movimiento Servo:**
-```bash
-RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_servo --target avr-none -Z build-std=core
-```
-
-**Probar Motores BTS7960:**
-```bash
-RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_bts7960 --target avr-none -Z build-std=core
-```
+## 📂 Estructura del Proyecto
+*   `src/lib.rs`: Punto de entrada de la librería compartida.
+*   `src/motor_control/`: Drivers para L298N, BTS7960 y Servos.
+*   `src/command_interface/`: Gestión de la comunicación serial.
+*   `examples/`: Pruebas funcionales (Echo RPi5, Motores, Servos).
