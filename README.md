@@ -1,69 +1,72 @@
 # Rover Low-Level Controller (Rust)
 
-Controlador de bajo nivel para un rover, desarrollado en Rust para el microcontrolador ATmega2560 (Arduino Mega). Este proyecto utiliza una arquitectura modular de librería y principios SOLID para el control de actuadores y sensores.
+Controlador de bajo nivel para un rover, desarrollado en Rust para el microcontrolador ATmega2560 (Arduino Mega).
 
-## 🚀 Arquitectura de la Librería
+## 🔌 Diagrama de Conexiones Completo (Arduino Mega)
 
-El núcleo del proyecto reside en `src/lib.rs`, permitiendo que tanto el programa principal como los ejemplos utilicen la misma lógica de drivers sin duplicación de código. Se utilizan interfaces comunes (`Motor` y `Servo` Traits) para garantizar la escalabilidad.
+### 1. Motor de Alta Potencia (BTS7960) - Tracción Principal
+Este driver requiere pines PWM y pines de habilitación.
 
-### Drivers de Motores DC:
+| Pin BTS7960 | Pin Arduino Mega | Función en Software | Notas |
+| :--- | :--- | :--- | :--- |
+| **RPWM** | **D9** (PH6) | Forward PWM (Timer 2) | Control de velocidad adelante |
+| **LPWM** | **D10** (PB4) | Backward PWM (Timer 2) | Control de velocidad atrás |
+| **R_EN** | **D22** (PA0) | Right Enable | Habilitación del giro horario |
+| **L_EN** | **D23** (PA1) | Left Enable | Habilitación del giro antihorario |
+| **VCC** | **5V** | Lógica Power | Alimentación del chip del driver |
+| **GND** | **GND** | Ground | Tierra común con el Arduino |
+| **B+ / B-** | **BATERÍA** | Power Input | 7.4V - 24V externos |
+| **M+ / M-** | **MOTOR DC** | Motor Output | Salida al motor |
 
-1.  **L298N:** Driver estándar para motores DC de baja/media potencia.
-    *   **Control:** 1 pin PWM (Velocidad) + 2 pines digitales (Dirección).
-2.  **BTS7960 (IBT-2):** Driver de alta potencia para motores grandes.
-    *   **Control:** 2 pines PWM (RPWM para avance, LPWM para retroceso).
+### 2. Puente-H Estándar (L298N) - Motores Secundarios
+Configuración típica para dos motores (A y B).
 
-### Driver de Servomotores:
+| Terminal L298N | Pin Arduino Mega | Función | Notas |
+| :--- | :--- | :--- | :--- |
+| **ENA** | **D9** (PH6) | PWM Motor A | Quitar jumper del L298N |
+| **IN1** | **D8** (PH5) | Dir 1 Motor A | Lógica de dirección |
+| **IN2** | **D7** (PH4) | Dir 2 Motor A | Lógica de dirección |
+| **ENB** | **D10** (PB4) | PWM Motor B | Quitar jumper del L298N |
+| **IN3** | **D6** (PH3) | Dir 1 Motor B | Lógica de dirección |
+| **IN4** | **D5** (PE3) | Dir 2 Motor B | Lógica de dirección |
 
-1.  **StandardServo:** Control de posición angular para servos de 0-180°.
-    *   **Implementación:** Utiliza **Software PWM (Bit-banging)** con precisión de microsegundos a **50Hz**. Esto previene el sobrecalentamiento en servos estándar al evitar las altas frecuencias de los timers PWM por defecto.
+### 3. Servomotores (Dirección / Cámara)
+Utiliza control por software (50Hz) para evitar ruidos y calentamiento.
 
-## 🔌 Conexiones de Hardware (Arduino Mega)
+| Cable Servo | Pin Arduino Mega | Función | Notas |
+| :--- | :--- | :--- | :--- |
+| **Naranja (Signal)**| **D11** (PB5) | PWM 50Hz | Control de posición |
+| **Rojo (VCC)** | **5V** | Power | Usar fuente externa si >1 servo |
+| **Marrón (GND)** | **GND** | Ground | Tierra común |
 
-### BTS7960
-| Pin BTS7960 | Pin Arduino | Función |
+### 4. Sensores de Distancia
+| Sensor | Pin Arduino Mega | Función | Notas |
+| :--- | :--- | :--- | :--- |
+| **HC-SR04 Trig** | **D12** (PB6) | Trigger | Pulso de disparo |
+| **HC-SR04 Echo** | **D13** (PB7) | Echo | Medición de tiempo |
+| **TF-Luna TX** | **RX0 (D0)** | UART RX | Recibe de la RPi5 / Sensor |
+| **TF-Luna RX** | **TX0 (D1)** | UART TX | Envía a la RPi5 / Sensor |
+
+### 5. Comunicación Raspberry Pi 5 (Yocto)
+| Conexión | Tipo | Notas |
 | :--- | :--- | :--- |
-| RPWM | D9 | Forward PWM |
-| LPWM | D10 | Backward PWM |
-| R_EN / L_EN | 5V | Enable |
+| **Puerto USB-B** | **USB a RPi5** | Comunicación Serial @ 115200 baudios |
 
-### L298N
-| Pin L298N | Pin Arduino | Función |
-| :--- | :--- | :--- |
-| ENA | D9 | Speed PWM |
-| IN1 / IN2 | D8 / D7 | Direction |
+---
 
-### Servomotor
-| Cable Servo | Pin Arduino | Función |
-| :--- | :--- | :--- |
-| Naranja | **D11** | Señal (50Hz) |
-| Rojo / Marrón| 5V / GND | Alimentación |
+## 🛠️ Comandos de Ejecución (Power User)
 
-## 🛠️ Comandos de Ejecución
+**Probar Comunicación Serial (Echo):**
+```bash
+RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_serial_echo --target avr-none -Z build-std=core
+```
 
-Este proyecto utiliza **Rust Nightly** para AVR.
-
-### Subir Ejemplos al Hardware:
-
-Sustituye `/dev/ttyUSB0` por tu puerto local.
-
-**Probar Servo (50Hz Seguro):**
+**Probar Movimiento Servo:**
 ```bash
 RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_servo --target avr-none -Z build-std=core
 ```
 
-**Probar BTS7960 (Alta Potencia):**
+**Probar Motores BTS7960:**
 ```bash
 RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_bts7960 --target avr-none -Z build-std=core
 ```
-
-**Probar L298N:**
-```bash
-RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_l298n --target avr-none -Z build-std=core
-```
-
-## 📂 Estructura
-*   `src/lib.rs`: Punto de entrada de la librería de drivers.
-*   `src/motor_control/`: Implementaciones de drivers (SOLID).
-*   `examples/`: Programas de prueba funcionales para hardware real.
-*   `tests/`: Validaciones de lógica ejecutables en PC.
