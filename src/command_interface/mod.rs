@@ -1,35 +1,61 @@
 //! Interfaz de comandos por puerto Serie
-//! Se encarga de recibir, almacenar y procesar paquetes de datos desde la Raspberry Pi 5.
+//! Gestiona la comunicación protocolizada con la Raspberry Pi 5.
 
-use arduino_hal::hal::port::Dynamic;
-use arduino_hal::hal::port::mode::Input;
-use arduino_hal::hal::port::Pin;
-use arduino_hal::pac::USART0;
-use arduino_hal::port::mode::Input as HalInput;
+use arduino_hal::hal::usart::UsartOps;
+use arduino_hal::prelude::*;
 
-pub struct SerialInterface {
-    serial: arduino_hal::Usart<USART0, Pin<HalInput, Dynamic>, Pin<arduino_hal::port::mode::Output, Dynamic>>,
+/// Capacidad máxima del buffer de comandos (en bytes)
+const BUFFER_SIZE: usize = 32;
+
+pub struct CommandInterface<USART, RX, TX> 
+where 
+    USART: UsartOps<arduino_hal::hal::Atmega, RX, TX>,
+{
+    serial: arduino_hal::Usart<USART, RX, TX>,
+    buffer: [u8; BUFFER_SIZE],
+    index: usize,
 }
 
-impl SerialInterface {
-    /// Crea una nueva interfaz serial a 115200 baudios (estándar para RPi5)
-    pub fn new(serial: arduino_hal::Usart<USART0, Pin<HalInput, Dynamic>, Pin<arduino_hal::port::mode::Output, Dynamic>>) -> Self {
-        Self { serial }
-    }
-
-    /// Lee un byte del puerto serie si está disponible.
-    pub fn read_byte(&mut self) -> Option<u8> {
-        if self.serial.void_read().is_ok() {
-            Some(self.serial.read())
-        } else {
-            None
+impl<USART, RX, TX> CommandInterface<USART, RX, TX> 
+where 
+    USART: UsartOps<arduino_hal::hal::Atmega, RX, TX>,
+{
+    /// Crea una nueva interfaz sobre cualquier puerto USART compatible.
+    pub fn new(serial: arduino_hal::Usart<USART, RX, TX>) -> Self {
+        Self {
+            serial,
+            buffer: [0; BUFFER_SIZE],
+            index: 0,
         }
     }
 
-    /// Envía un mensaje de texto de vuelta a la Raspberry Pi.
-    pub fn send_str(&mut self, message: &str) {
-        for b in message.as_bytes() {
-            self.serial.write(*b);
+    /// Intenta leer un comando. Devuelve true si se recibió un comando completo (\n).
+    pub fn poll_command(&mut self) -> bool {
+        while let Ok(byte) = self.serial.read() {
+            if byte == b'\n' || byte == b'\r' {
+                if self.index > 0 {
+                    return true;
+                }
+            } else if self.index < BUFFER_SIZE - 1 {
+                self.buffer[self.index] = byte;
+                self.index += 1;
+            }
         }
+        false
+    }
+
+    /// Obtiene el comando actual como texto y resetea el buffer.
+    pub fn get_command(&mut self) -> &[u8] {
+        let len = self.index;
+        self.index = 0;
+        &self.buffer[..len]
+    }
+
+    /// Envía un mensaje de log a la RPi 5.
+    pub fn log(&mut self, msg: &str) {
+        for b in msg.as_bytes() {
+            let _ = nb::block!(self.serial.write(*b));
+        }
+        let _ = nb::block!(self.serial.write(b'\n'));
     }
 }
