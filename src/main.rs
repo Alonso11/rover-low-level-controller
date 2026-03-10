@@ -5,37 +5,41 @@ use panic_halt as _;
 use arduino_hal::simple_pwm::IntoPwmPin;
 mod motor_control;
 use motor_control::Motor;
-use motor_control::l298n::L298NMotor;
+use motor_control::bts7960::BTS7960Motor;
 
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
     
-    // --- CONFIGURACIÓN DE TIMERS PARA PWM ---
+    // --- CONFIGURACIÓN DE TIMERS ---
+    // En el Mega, D9 y D10 comparten el Timer 2
     let mut timer2 = arduino_hal::simple_pwm::Timer2Pwm::new(dp.TC2, arduino_hal::simple_pwm::Prescaler::Prescale64);
     
-    // --- MOTOR DERECHO (L298N) ---
-    let motor_a_pwm = pins.d9.into_output().into_pwm(&mut timer2);
-    let motor_a_in1 = pins.d8.into_output();
-    let motor_a_in2 = pins.d7.into_output();
-    let mut motor_right = L298NMotor::new(motor_a_pwm, motor_a_in1, motor_a_in2, false);
+    // --- CONFIGURACIÓN BTS7960 (Test Motor Único) ---
+    // RPWM (Giro horario) -> D9
+    // LPWM (Giro antihorario) -> D10
+    // R_EN / L_EN -> Deben conectarse a 5V externos o del Arduino
+    let rpwm = pins.d9.into_output().into_pwm(&mut timer2);
+    let lpwm = pins.d10.into_output().into_pwm(&mut timer2);
 
-    // --- MOTOR IZQUIERDO (L298N) ---
-    let motor_b_pwm = pins.d10.into_output().into_pwm(&mut timer2);
-    let motor_b_in3 = pins.d6.into_output();
-    let motor_b_in4 = pins.d5.into_output();
-    let mut motor_left = L298NMotor::new(motor_b_pwm, motor_b_in3, motor_b_in4, false);
+    let mut test_motor = BTS7960Motor::new(rpwm, lpwm, false);
 
     loop {
-        // Adelante 70%
-        motor_right.set_speed(70);
-        motor_left.set_speed(70);
+        // Adelante 100% (Solo activará RPWM)
+        test_motor.set_speed(100);
         arduino_hal::delay_ms(2000);
 
         // Frenado
-        motor_right.stop();
-        motor_left.stop();
+        test_motor.stop();
+        arduino_hal::delay_ms(1000);
+
+        // Atrás 50% (Solo activará LPWM)
+        test_motor.set_speed(-50);
+        arduino_hal::delay_ms(2000);
+
+        // Frenado
+        test_motor.stop();
         arduino_hal::delay_ms(1000);
     }
 }

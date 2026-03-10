@@ -14,4 +14,5 @@ pub trait Motor {
 /// Implementación para el driver Puente-H L298N
 pub mod l298n;
 
-// Futuro: pub mod bts7960;
+/// Implementación para el driver de alta potencia BTS7960
+pub mod bts7960;

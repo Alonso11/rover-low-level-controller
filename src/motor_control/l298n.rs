@@ -4,10 +4,10 @@
 use arduino_hal::hal::port::{Pin, PinOps};
 use arduino_hal::hal::port::mode::{Output, PwmOutput};
 use arduino_hal::hal::simple_pwm::PwmPinOps;
-use crate::motor_control::Motor; // Importamos el trait desde mod.rs
+use crate::motor_control::Motor;
 
 /// Implementación del controlador para el driver Puente-H L298N.
-/// Requiere un pin PWM (ENA o ENB) y dos pines de salida digital (IN1/IN2 o IN3/IN4).
+#[allow(dead_code)]
 pub struct L298NMotor<TC, PwmPin, In1Pin, In2Pin> {
     pwm: Pin<PwmOutput<TC>, PwmPin>,
     in1: Pin<Output, In1Pin>,
@@ -21,6 +21,8 @@ where
     In1Pin: PinOps,
     In2Pin: PinOps,
 {
+    /// Crea una nueva instancia para el L298N.
+    #[allow(dead_code)]
     pub fn new(mut pwm: Pin<PwmOutput<TC>, PwmPin>, in1: Pin<Output, In1Pin>, in2: Pin<Output, In2Pin>, inverted: bool) -> Self {
         pwm.enable();
         Self {

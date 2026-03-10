@@ -1,43 +1,55 @@
-# Rover Low-Level Controller (Arduino Mega 2560)
+# Rover Low-Level Controller (Rust)
 
-Este es el firmware de bajo nivel para el rover, implementado en **Rust** para garantizar seguridad de memoria y concurrencia robusta.
+Controlador de bajo nivel para un rover, desarrollado en Rust para el microcontrolador ATmega2560 (Arduino Mega). Este proyecto utiliza una arquitectura modular y principios SOLID para el control de actuadores y sensores.
 
-## 🛠 Requisitos de Sistema
+## 🚀 Arquitectura de Control de Motores
 
-- **Rust Nightly**: Necesario para el soporte de arquitectura AVR.
-- **ravedude**: Herramienta para flashear y monitorizar el Arduino.
-  ```bash
-  cargo install ravedude
-  ```
-- **avr-gcc**: Linker necesario para la compilación.
+El sistema utiliza una interfaz común (`Motor` Trait) que permite intercambiar drivers de hardware sin modificar la lógica principal.
 
-## 🚀 Compilación y Carga
+### Drivers Soportados:
 
-Para compilar y subir el código al Arduino Mega (conectado vía USB):
+1.  **L298N:** Driver estándar para motores DC de baja/media potencia.
+    *   **Control:** 1 pin PWM (Velocidad) + 2 pines digitales (Dirección).
+2.  **BTS7960 (IBT-2):** Driver de alta potencia para motores grandes.
+    *   **Control:** 2 pines PWM (RPWM para avance, LPWM para retroceso).
 
+## 🔌 Conexiones de Hardware (Arduino Mega)
+
+### BTS7960 (Driver de Alta Potencia)
+| Pin BTS7960 | Pin Arduino | Función |
+| :--- | :--- | :--- |
+| RPWM | D9 | Forward PWM |
+| LPWM | D10 | Backward PWM |
+| R_EN / L_EN | 5V | Enable (Siempre activo) |
+| VCC / GND | 5V / GND | Lógica y Tierra |
+
+### L298N (Ejemplo Motor A)
+| Pin L298N | Pin Arduino | Función |
+| :--- | :--- | :--- |
+| ENA | D9 | Speed PWM |
+| IN1 | D8 | Direction 1 |
+| IN2 | D7 | Direction 2 |
+
+## 🛠️ Desarrollo y Compilación
+
+Este proyecto requiere **Rust Nightly** y las herramientas de AVR instaladas.
+
+### Comandos Principales:
+
+**Subir el test actual (BTS7960):**
 ```bash
-RUSTFLAGS="-C target-cpu=atmega2560" cargo run -Z build-std=core -Z json-target-spec --target avr-atmega2560.json
+RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --target avr-none -Z build-std=core
 ```
 
-## 🔌 Interfaz de Comunicación (SBC <-> Arduino)
+**Ejecutar el ejemplo del L298N:**
+```bash
+RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly run --example test_l298n --target avr-none -Z build-std=core
+```
 
-La comunicación se realiza vía Serial a **115,200 baudios**.
-
-### Protocolo de Comandos:
-- `M`: **Move** - Mueve el rover adelante.
-- `S`: **Stop** - Detiene todos los motores.
-- `D`: **Distance** - Lee el sensor ultrasónico (Trig: D4, Echo: D5).
-
-## 🧩 Arquitectura SOLID
-
-El proyecto sigue una estructura modular diseñada para ser expandible:
-- `src/motor_control`: Abstracción de motores y drivers.
-- `src/sensors`: Gestión de sensores de distancia y estado.
-- `src/command_interface`: Puente de comandos con la Raspberry Pi 5.
-
-## ⚠️ Notas de Compatibilidad (AVR-Rust)
-
-Debido a las limitaciones del backend de AVR en Rust:
-1. Se requiere el flag `-Z build-std=core` para recompilar la librería core para 8-bit.
-2. Los tipos de PWM son altamente dependientes del Timer utilizado (en este caso **Timer 3** para pines D2 y D3).
-3. Se recomienda usar tipos concretos en lugar de Traits genéricos excesivamente complejos para evitar el "bloat" del binario.
+## 📂 Estructura del Proyecto
+*   `src/motor_control/`: Contiene la lógica de los drivers.
+    *   `mod.rs`: Definición del `trait Motor`.
+    *   `l298n.rs`: Implementación para L298N.
+    *   `bts7960.rs`: Implementación para BTS7960.
+*   `examples/`: Programas de prueba completos para cada componente.
+*   `tests/`: Pruebas unitarias de lógica (ejecutables en PC).
