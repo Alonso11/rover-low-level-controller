@@ -2,7 +2,6 @@
 #![no_main]
 
 use panic_halt as _;
-// Usamos la librería del proyecto
 use rover_low_level_controller::motor_control::Servo;
 use rover_low_level_controller::motor_control::servo::StandardServo;
 
