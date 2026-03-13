@@ -1,0 +1,45 @@
+name: Rust CI (AVR)
+
+on:
+  push:
+    branches: [ "main", "motors-control" ]
+  pull_request:
+    branches: [ "main", "motors-control" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Compilación para ATmega2560
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout del código
+      uses: actions/checkout@v4
+
+    - name: Instalar herramientas de AVR
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-avr avr-libc
+
+    - name: Configurar Rust Nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+
+    - name: Verificar Compilación General (Dry Run)
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --target avr-none -Z build-std=core
+
+    - name: Verificar Ejemplo de 6 Motores (Nuevo)
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example control_6_motors_l298n --target avr-none -Z build-std=core
+
+    - name: Verificar Ejemplo BTS7960
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_bts7960 --target avr-none -Z build-std=core
+
+    - name: Verificar Ejemplo Servo
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_servo --target avr-none -Z build-std=core
