@@ -56,7 +56,21 @@ Control de precisión por software a 50Hz.
 | **Rojo** | **5V** | - | VCC | Usar fuente externa si >1 servo |
 | **Marrón** | **GND** | GND | Ground | Tierra común |
 
-## 🛠️ Comandos de Validación
+## 🏗️ Compilación Segura (Dry Run)
+
+Para verificar que el código es correcto y compila sin errores antes de flashear el hardware, utiliza el siguiente comando. Este comando recompila la librería estándar (`core`) para asegurar compatibilidad total con el ATmega2560.
+
+**Compilar Todo el Proyecto:**
+```bash
+RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --target avr-none -Z build-std=core
+```
+
+**Compilar Ejemplo de 6 Motores (Nuevo):**
+```bash
+RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --example control_6_motors_l298n --target avr-none -Z build-std=core
+```
+
+## 🛠️ Comandos de Validación (Flasheo)
 
 **Validar Protocolo por USB (PC):**
 ```bash
