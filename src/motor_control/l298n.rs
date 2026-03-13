@@ -69,3 +69,49 @@ where
         self.pwm.set_duty(0);
     }
 }
+
+/// Estructura para controlar un chasis de 6 ruedas con 3 puentes-H L298N.
+#[allow(dead_code)]
+pub struct SixWheelRover<M1, M2, M3, M4, M5, M6> {
+    pub frontal_right: M1,
+    pub frontal_left: M2,
+    pub center_right: M3,
+    pub center_left: M4,
+    pub rear_right: M5,
+    pub rear_left: M6,
+}
+
+impl<M1, M2, M3, M4, M5, M6> SixWheelRover<M1, M2, M3, M4, M5, M6>
+where
+    M1: Motor, M2: Motor, M3: Motor, M4: Motor, M5: Motor, M6: Motor,
+{
+    pub fn new(fr: M1, fl: M2, cr: M3, cl: M4, rr: M5, rl: M6) -> Self {
+        Self {
+            frontal_right: fr,
+            frontal_left: fl,
+            center_right: cr,
+            center_left: cl,
+            rear_right: rr,
+            rear_left: rl,
+        }
+    }
+
+    pub fn set_speeds(&mut self, left_speed: i16, right_speed: i16) {
+        self.frontal_left.set_speed(left_speed);
+        self.center_left.set_speed(left_speed);
+        self.rear_left.set_speed(left_speed);
+        
+        self.frontal_right.set_speed(right_speed);
+        self.center_right.set_speed(right_speed);
+        self.rear_right.set_speed(right_speed);
+    }
+
+    pub fn stop(&mut self) {
+        self.frontal_left.stop();
+        self.center_left.stop();
+        self.rear_left.stop();
+        self.frontal_right.stop();
+        self.center_right.stop();
+        self.rear_right.stop();
+    }
+}

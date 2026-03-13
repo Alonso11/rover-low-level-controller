@@ -1,7 +1,7 @@
 {
     "arch": "avr",
     "cpu": "atmega2560",
-    "data-layout": "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8-a:8",
+    "data-layout": "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8:16-a:8",
     "executables": true,
     "linker": "avr-gcc",
     "linker-flavor": "gcc",
@@ -10,6 +10,6 @@
     "no-default-libraries": false,
     "panic-strategy": "abort",
     "relocation-model": "static",
-    "target-c-int-width": "16",
-    "target-pointer-width": "16"
+    "target-c-int-width": 16,
+    "target-pointer-width": 16
 }
