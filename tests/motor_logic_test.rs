@@ -1,3 +1,4 @@
+// Version: v1.0
 // Archivo para Pruebas Unitarias de Lógica (Unit Tests)
 // Estas pruebas se ejecutan en tu PC, no en el Arduino.
 // Comando para correrlas: cargo test --target x86_64-unknown-linux-gnu (o tu arquitectura de PC)

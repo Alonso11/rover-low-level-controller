@@ -1,3 +1,4 @@
+<!-- Version: v1.0 -->
 # Control de 6 Motores (Rover Olympus) - Arquitectura Bare-Metal
 
 Este documento detalla la arquitectura implementada para el control de un chasis de 6 ruedas utilizando 3 puentes-H L298N sobre un ATmega2560, empleando técnicas de **Programación Bare-Metal**.

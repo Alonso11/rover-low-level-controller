@@ -1,3 +1,4 @@
+# Version: v1.0
 # Ravedude.toml
 [general]
 board = "mega2560"

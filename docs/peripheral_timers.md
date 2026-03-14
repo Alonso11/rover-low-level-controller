@@ -1,3 +1,4 @@
+<!-- Version: v1.0 -->
 # Temporizadores (Timers) del ATmega2560
 
 Este documento detalla los temporizadores hardware disponibles en el microcontrolador ATmega2560 para la generación de señales PWM, con focus en el control de motores.
@@ -22,8 +23,8 @@ El ATmega2560 dispone de **6 temporizadores** (Timer0 a Timer5), cada uno con di
 ### Timer2 (8-bit, 2 canales)
 | Canal | Pin Arduino | Puerto | Registro OCR |
 |-------|-------------|--------|--------------|
-| OC2A | D9 | PH6 | OCR2A |
-| OC2B | D8 | PG5 | OCR2B |
+| OC2A | D10 | PB4 | OCR2A |
+| OC2B | D9 | PH6 | OCR2B |
 
 ### Timer3 (16-bit, 3 canales)
 | Canal | Pin Arduino | Puerto | Registro OCR |
@@ -71,7 +72,7 @@ Cada driver L298N controlling 2 motors debe usar **timers diferentes** para evit
 ### Casos de Uso
 
 #### 2 Motores (1 puente-H)
-- **Opción A**: Timer2 (D9, D8) → suficiente
+- **Opción A**: Timer2 (D10, D9) → suficiente
 - **Opción B**: Timer2 + Timer3 → mayor redundancia
 
 #### 4 Motores (2 puentes-H)
@@ -87,7 +88,7 @@ Cada driver L298N controlling 2 motors debe usar **timers diferentes** para evit
 
 ### Conflicto 1: Pines de dirección vs PWM
 **Problema**: Usar pines PWM como pines de dirección (IN1, IN2).
-**Solución**: Usar pines no-PWM para dirección (ej: D24, D25).
+**Solución**: Usar pines no-PWM para dirección (ej: D22, D23, D24, D25).
 
 ### Conflicto 2: Múltiples canales del mismo timer
 **Problema**:Timer2 solo tiene 2 canales, insuficiente para más de 2 motores.
@@ -108,21 +109,21 @@ let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64);
 // Timer para motor izquierdo (puente 2) - usar timer diferente
 let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64);
 
-// Motor derecho: PWM en D9 (OC2A), dirección en D8, D7
-let right_pwm = pins.d9.into_output().into_pwm(&mut timer2);
+// Motor derecho: PWM en D10 (OC2A), dirección en D22, D23
+let right_pwm = pins.d10.into_output().into_pwm(&mut timer2);
 
-// Motor izquierdo: PWM en D2 (OC3B), dirección en D24, D25
+// Motor izquierdo: PWM en D2 (OC3B), dirección en D28, D29
 let left_pwm = pins.d2.into_output().into_pwm(&mut timer3);
 ```
 
 ## 7. Tabla de Referencia Rápida
 
-| Motores | Timer 1 | Timer 2 | Timer 3 | Pines PWM |
-|---------|---------|---------|---------|-----------|
-| 2 | - | D9, D8 | - | D9, D8 |
-| 2 (redundante) | - | D9 | D2 | D9, D2 |
-| 4 | - | D9, D8 | D5, D2 | D9, D8, D5, D2 |
-| 6 | - | D9, D8 | D5, D2, D3 | D9, D8, D5, D2, D3, D6 |
+| Motores | Timer 1 | Timer 2 | Timer 3 | Timer 4 | Pines PWM |
+|---------|---------|---------|---------|---------|-----------|
+| 2 | - | D10, D9 | - | - | D10, D9 |
+| 2 (redundante) | - | D10 | D2 | - | D10, D2 |
+| 4 | - | D10, D9 | D5, D2 | - | D10, D9, D5, D2 |
+| 6 | - | D10, D9 | D5, D2 | D6, D7 | D10, D9, D5, D2, D6, D7 |
 
 ## 8. Notas de Robustez
 

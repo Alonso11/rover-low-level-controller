@@ -1,3 +1,4 @@
+<!-- Version: v1.0 -->
 # Rover Low-Level Controller (Rust)
 
 A high-performance, modular firmware for a multi-terrain rover, implemented in **embedded Rust** for the **ATmega2560** (Arduino Mega). This project serves as the hardware abstraction layer (HAL), providing low-level execution for a **Raspberry Pi 5** (running Yocto Linux) through a dedicated GPIO UART communication bridge.
@@ -56,7 +57,7 @@ Control de precisión por software a 50Hz.
 | **Rojo** | **5V** | - | VCC | Usar fuente externa si >1 servo |
 | **Marrón** | **GND** | GND | Ground | Tierra común |
 
-## 🏗️ Compilación Segura (Dry Run)
+## Compilación Segura (Dry Run)
 
 Para verificar que el código es correcto y compila sin errores antes de flashear el hardware, utiliza el siguiente comando. Este comando recompila la librería estándar (`core`) para asegurar compatibilidad total con el ATmega2560.
 
@@ -70,7 +71,7 @@ RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --target avr-none -Z b
 RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --example control_6_motors_l298n --target avr-none -Z build-std=core
 ```
 
-## 🛠️ Comandos de Validación (Flasheo)
+## Comandos de Validación (Flasheo)
 
 **Validar Protocolo por USB (PC):**
 ```bash

@@ -1,3 +1,4 @@
+// Version: v1.0
 //! Driver para el Puente-H de alta potencia BTS7960 (IBT-2)
 //! Este módulo implementa el control de motores utilizando dos señales PWM (RPWM y LPWM).
 

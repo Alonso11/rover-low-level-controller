@@ -1,3 +1,4 @@
+// Version: v1.0
 //! Driver para servomotores estándar (0-180 grados)
 //! Basado en pulsos precisos de microsegundos (50Hz).
 

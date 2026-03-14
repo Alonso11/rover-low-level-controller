@@ -1,3 +1,4 @@
+// Version: v1.0
 //! Interfaz de comandos por puerto Serie
 //! Gestiona la comunicación protocolizada con la Raspberry Pi 5.
 

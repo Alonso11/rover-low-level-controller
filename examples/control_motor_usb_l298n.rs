@@ -1,3 +1,4 @@
+// Version: v1.0
 #![no_std]
 #![no_main]
 
@@ -15,29 +16,31 @@ fn main() -> ! {
     let serial = arduino_hal::default_serial!(dp, pins, 115200);
     let mut interface = CommandInterface::new(serial);
 
+    // Configuración de Timers para el Puente H Frontal (Timer 2)
+    // Usamos Timer2 porque controla los motores frontales en el diseño del Rover de 6 ruedas.
+    // Esto asegura compatibilidad con el hardware real.
     let mut timer2 = arduino_hal::simple_pwm::Timer2Pwm::new(
         dp.TC2,
         arduino_hal::simple_pwm::Prescaler::Prescale64,
     );
-    let mut timer3 = arduino_hal::simple_pwm::Timer3Pwm::new(
-        dp.TC3,
-        arduino_hal::simple_pwm::Prescaler::Prescale64,
-    );
 
-    let motor_a_pwm = pins.d9.into_output().into_pwm(&mut timer2);
-    let motor_a_in1 = pins.d8.into_output();
-    let motor_a_in2 = pins.d7.into_output();
-    let mut motor_right = L298NMotor::new(motor_a_pwm, motor_a_in1, motor_a_in2, false);
+    // --- Motor Derecho (Frontal) ---
+    // PWM: D10 (OC2A)
+    // Dirección: D22, D23
+    let motor_right_pwm = pins.d10.into_output().into_pwm(&mut timer2);
+    let motor_right_in1 = pins.d22.into_output();
+    let motor_right_in2 = pins.d23.into_output();
+    let mut motor_right = L298NMotor::new(motor_right_pwm, motor_right_in1, motor_right_in2, false);
 
-    // Timer3 para el segundo motor (evita conflicto de Timer2)
-    // OC3B = D2
-    let motor_b_pwm = pins.d2.into_output().into_pwm(&mut timer3);
-    // Pines de dirección en pines que no sean PWM de Timer3
-    let motor_b_in3 = pins.d24.into_output(); // No es PWM
-    let motor_b_in4 = pins.d25.into_output(); // No es PWM
-    let mut motor_left = L298NMotor::new(motor_b_pwm, motor_b_in3, motor_b_in4, false);
+    // --- Motor Izquierdo (Frontal) ---
+    // PWM: D9 (OC2B)
+    // Dirección: D24, D25
+    let motor_left_pwm = pins.d9.into_output().into_pwm(&mut timer2);
+    let motor_left_in3 = pins.d24.into_output();
+    let motor_left_in4 = pins.d25.into_output();
+    let mut motor_left = L298NMotor::new(motor_left_pwm, motor_left_in3, motor_left_in4, false);
 
-    interface.log("Rover Olympus USB listo (F, B, L, R, S)");
+    interface.log("Rover Olympus USB listo (Motores Frontales)");
 
     loop {
         if interface.poll_command() {
