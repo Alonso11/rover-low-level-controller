@@ -1,16 +1,11 @@
 <!-- Version: v1.0 -->
-# Control de 6 Motores (Rover Olympus) - Arquitectura Bare-Metal
+# Arquitectura de Control y Sensores (Rover Olympus)
 
-Este documento detalla la arquitectura implementada para el control de un chasis de 6 ruedas utilizando 3 puentes-H L298N sobre un ATmega2560, empleando técnicas de **Programación Bare-Metal**.
+Este documento detalla la arquitectura implementada para el control de un chasis de 6 ruedas y la lectura de encoders utilizando un ATmega2560.
 
-## 1. Abstracción: Estructura `SixWheelRover`
+## 1. Abstracción de Motores: `SixWheelRover`
 
-Para gestionar la complejidad de 6 motores individuales, hemos implementado una abstracción de alto nivel en `src/motor_control/l298n.rs`.
-
-### Arquitectura de la Estructura
-La estructura `SixWheelRover` agrupa 6 instancias del trait `Motor`. Esto permite un control coordinado:
-- **Control Unificado:** Sincroniza los tres motores de cada lado para asegurar una tracción constante y evitar derrapes.
-- **Independencia de Implementación:** Funciona con cualquier driver que cumpla el trait `Motor`, facilitando futuros cambios de hardware.
+Para gestionar 6 motores individuales, utilizamos la estructura `SixWheelRover` que agrupa instancias del trait `Motor`. Esto permite un control diferencial (tanque) coordinado.
 
 ```rust
 pub struct SixWheelRover<M1, M2, M3, M4, M5, M6> {
@@ -23,32 +18,38 @@ pub struct SixWheelRover<M1, M2, M3, M4, M5, M6> {
 }
 ```
 
-## 2. Técnica: PWM por Hardware (Timers Nativos)
+## 2. Generación de PWM por Hardware
 
-En lugar de generar señales de control mediante software (lo cual consumiría ciclos de CPU), utilizamos los **Timers de Hardware** del ATmega2560. Esta es una característica fundamental de la programación Bare-Metal.
+Utilizamos los Timers internos para generar señales PWM sin carga para la CPU. Para habilitar el uso de encoders, los pines se han distribuido de la siguiente manera:
 
-### Ventajas del PWM por Hardware
-- **Ejecución Asíncrona:** Una vez configurado el Timer, este genera la señal PWM de forma totalmente independiente del código principal.
-- **Estabilidad de Frecuencia:** La señal es generada por los circuitos lógicos del chip, lo que elimina cualquier variación (jitter) en la velocidad de los motores.
-- **Eficiencia Total:** La CPU no interviene en la generación del pulso, quedando 100% disponible para la lógica de navegación y comunicación.
-
-### Asignación de Recursos de Hardware
-Hemos distribuido los 6 canales PWM en 3 Timers independientes (Timer 2, 3 y 4):
-
-| Componente | Recurso (Timer) | Pin PWM | Pines Dirección (IN1/IN2) |
+| Componente | Timer | Pines PWM | Pines Dirección |
 | :--- | :--- | :--- | :--- |
 | **Puente 1 (Frontal)** | Timer 2 | D10, D9 | D22 al D25 |
-| **Puente 2 (Central)** | Timer 3 | D5, D2 | D26 al D29 |
-| **Puente 3 (Trasero)** | Timer 4 | D6, D7 | D30 al D33 |
+| **Puente 2 (Central)** | Timer 1 | D11, D12 | D26 al D29 |
+| **Puente 3 (Trasero)** | Timer 5 | D46, D45 | D30 al D33 |
 
-### Configuración de los Timers
-Utilizamos un `Prescaler::Prescale64` para ajustar la frecuencia del PWM a un rango óptimo para motores DC (aprox. 1kHz), proporcionando un control de velocidad suave y reduciendo el ruido eléctrico.
+*Nota: Esta configuración libera los pines de interrupción externa (D2, D3, D18-D21) para los encoders.*
 
-```rust
-let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64);
-let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64);
-let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64);
-```
+## 3. Encoders de Efecto Hall
 
-## 3. Lógica de Control
-El sistema opera en un bucle de control infinito donde la CPU solo interviene para cambiar los registros de los Timers cuando se recibe un nuevo comando serie. Mientras no hay cambios, el hardware mantiene los motores girando a la última velocidad establecida sin intervención del programador.
+Los encoders miden la rotación de los motores detectando el paso de imanes. Para no perder pulsos, se utilizan **Interrupciones Externas (External Interrupts)**.
+
+### Módulo `sensors::encoder`
+- **Trait `Encoder`**: Define una interfaz para leer y resetear contadores.
+- **Estructura `HallEncoder`**: Implementación que utiliza un `Mutex` y `Cell` para un acceso seguro desde las ISR (Interrupt Service Routines).
+
+### Distribución de Interrupciones
+| Motor | Pin Arduino | Vector ISR |
+| :--- | :--- | :--- |
+| Frontal Derecho | D21 | INT0 |
+| Frontal Izquierdo | D20 | INT1 |
+| Central Derecho | D19 | INT2 |
+| Central Izquierdo | D18 | INT3 |
+| Trasero Derecho | D2 | INT4 |
+| Trasero Izquierdo | D3 | INT5 |
+
+## 4. Requisitos de Software
+Para el manejo de interrupciones en Rust bare-metal:
+1.  Habilitar feature: `#![feature(abi_avr_interrupt)]`.
+2.  Dependencia: `avr-device` para los macros de interrupción.
+3.  Uso de `unsafe` para habilitar interrupciones globales: `avr_device::interrupt::enable()`.

@@ -10,44 +10,50 @@ El ATmega2560 dispone de **6 temporizadores** (Timer0 a Timer5), cada uno con di
 | Timer | Canales PWM | Frecuencia Base | Uso Recomendado |
 |-------|-------------|-----------------|-----------------|
 | Timer0 | 2 | 1kHz (Prescale 64) | Sistema (delay_ms) |
-| Timer1 | 3 | ~1kHz | Servomotores / Encoders |
-| Timer2 | 2 | ~1kHz | Motor 1 (L298N) |
-| Timer3 | 3 | ~1kHz | Motor 2 (L298N) |
-| Timer4 | 3 | ~1kHz | Motor 3 (L298N) |
-| Timer5 | 3 | ~1kHz | Reserved / Extensión |
+| Timer1 | 3 | ~1kHz | Motor 2 (Central) |
+| Timer2 | 2 | ~1kHz | Motor 1 (Frontal) |
+| Timer3 | 3 | ~1kHz | Reservado / Encoders |
+| Timer4 | 3 | ~1kHz | Reservado / Extensión |
+| Timer5 | 3 | ~1kHz | Motor 3 (Trasero) |
 
 **Total: 16 canales PWM disponibles**
 
-## 2. Distribución de Pines por Timer
+## 2. Distribución de Pines por Timer (Nueva Arquitectura para Encoders)
 
-### Timer2 (8-bit, 2 canales)
+### Timer2 (8-bit, 2 canales) - Motores Frontales
 | Canal | Pin Arduino | Puerto | Registro OCR |
 |-------|-------------|--------|--------------|
 | OC2A | D10 | PB4 | OCR2A |
 | OC2B | D9 | PH6 | OCR2B |
 
-### Timer3 (16-bit, 3 canales)
-| Canal | Pin Arduino | Puerto | Registro OCR |
-|-------|-------------|--------|--------------|
-| OC3A | D5 | PE3 | OCR3A |
-| OC3B | D2 | PE4 | OCR3B |
-| OC3C | D3 | PE5 | OCR3C |
-
-### Timer4 (16-bit, 3 canales)
-| Canal | Pin Arduino | Puerto | Registro OCR |
-|-------|-------------|--------|--------------|
-| OC4A | D6 | PH3 | OCR4A |
-| OC4B | D7 | PH4 | OCR4B |
-| OC4C | D8 | PH5 | OCR4C |
-
-### Timer1 (16-bit, 3 canales)
+### Timer1 (16-bit, 3 canales) - Motores Centrales
 | Canal | Pin Arduino | Puerto | Registro OCR |
 |-------|-------------|--------|--------------|
 | OC1A | D11 | PB5 | OCR1A |
 | OC1B | D12 | PB6 | OCR1B |
 | OC1C | D13 | PB7 | OCR1C |
 
-## 3. Configuración de Frecuencia
+### Timer5 (16-bit, 3 canales) - Motores Traseros
+| Canal | Pin Arduino | Puerto | Registro OCR |
+|-------|-------------|--------|--------------|
+| OC5A | D46 | PL3 | OCR5A |
+| OC5B | D45 | PL4 | OCR5B |
+| OC5C | D44 | PL5 | OCR5C |
+
+## 3. Asignación de Encoders (Interrupciones Externas)
+
+Para los encoders se utilizan los pines con capacidad de **Interrupción Externa (INT)** para asegurar que no se pierda ningún pulso a alta velocidad:
+
+| Encoder | Pin Arduino | Interrupción |
+|---------|-------------|--------------|
+| Frontal Derecho | D21 | INT0 |
+| Frontal Izquierdo | D20 | INT1 |
+| Central Derecho | D19 | INT2 |
+| Central Izquierdo | D18 | INT3 |
+| Trasero Derecho | D2 | INT4 |
+| Trasero Izquierdo | D3 | INT5 |
+
+## 4. Configuración de Frecuencia
 
 La frecuencia del PWM se calcula con:
 
@@ -116,14 +122,13 @@ let right_pwm = pins.d10.into_output().into_pwm(&mut timer2);
 let left_pwm = pins.d2.into_output().into_pwm(&mut timer3);
 ```
 
-## 7. Tabla de Referencia Rápida
+## 7. Tabla de Referencia Rápida (Configuración Encoders)
 
-| Motores | Timer 1 | Timer 2 | Timer 3 | Timer 4 | Pines PWM |
-|---------|---------|---------|---------|---------|-----------|
-| 2 | - | D10, D9 | - | - | D10, D9 |
-| 2 (redundante) | - | D10 | D2 | - | D10, D2 |
-| 4 | - | D10, D9 | D5, D2 | - | D10, D9, D5, D2 |
-| 6 | - | D10, D9 | D5, D2 | D6, D7 | D10, D9, D5, D2, D6, D7 |
+| Motores | Timer 2 (Front) | Timer 1 (Cent) | Timer 5 (Rear) | Pines PWM | Pines Encoder |
+|---------|-----------------|----------------|----------------|-----------|---------------|
+| 2 | D10, D9 | - | - | D10, D9 | D21, D20 |
+| 4 | D10, D9 | D11, D12 | - | D10, D9, D11, D12 | D21-D18 |
+| 6 | D10, D9 | D11, D12 | D46, D45 | D10, D9, D11, D12, D46, D45 | D21, D20, D19, D18, D2, D3 |
 
 ## 8. Notas de Robustez
 

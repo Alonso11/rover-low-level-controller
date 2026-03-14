@@ -17,6 +17,7 @@ ufmt = "0.2.0"
 nb = "0.1.3"
 # Eliminamos embedded-hal de aquí para usar el de arduino-hal
 arduino-hal = { git = "https://github.com/rahix/avr-hal", features = ["arduino-mega2560"] }
+avr-device = "0.8.1"
 
 [profile.dev]
 panic = "abort"
