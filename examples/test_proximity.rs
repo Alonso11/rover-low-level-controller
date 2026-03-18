@@ -53,7 +53,7 @@ fn main() -> ! {
         // Lectura del sensor ultrasónico
         match hc_sr04.get_distance_mm() {
             Some(dist) => {
-                ufmt::uwrite!(&mut serial, "US: {:>4} mm | ", dist).unwrap();
+                ufmt::uwrite!(&mut serial, "US: {} mm | ", dist).unwrap();
             }
             None => {
                 ufmt::uwrite!(&mut serial, "US:  --  mm | ").unwrap();
@@ -63,7 +63,7 @@ fn main() -> ! {
         // Lectura del sensor LiDAR
         match tf_luna.get_distance_mm() {
             Some(dist) => {
-                ufmt::uwriteln!(&mut serial, "LiDAR: {:>4} mm\r", dist).unwrap();
+                ufmt::uwriteln!(&mut serial, "LiDAR: {} mm\r", dist).unwrap();
             }
             None => {
                 ufmt::uwriteln!(&mut serial, "LiDAR:  --  mm\r").unwrap();

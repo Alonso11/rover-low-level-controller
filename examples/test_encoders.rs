@@ -59,8 +59,6 @@ fn main() -> ! {
     }
 }
 
-/// Rutina de Servicio de Interrupción (ISR) para INT0.
-/// Este atributo 'interrupt' vincula la función al vector de hardware INT0.
 #[avr_device::interrupt(atmega2560)]
 fn INT0() {
     // Incrementamos el contador del encoder
