@@ -1,45 +1,62 @@
+# Version: v1.1
 name: Rust CI (AVR)
 
 on:
   push:
-    branches: [ "main", "motors-control" ]
+    branches: [ "main", "motors-control", "rover-controller", "feature/encoders", "feature/proximity" ]
   pull_request:
-    branches: [ "main", "motors-control" ]
+    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-    name: Compilación para ATmega2560
+    name: Build for ATmega2560
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout del código
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Instalar herramientas de AVR
+    - name: Install AVR toolchain
       run: |
         sudo apt-get update
         sudo apt-get install -y gcc-avr avr-libc
 
-    - name: Configurar Rust Nightly
+    - name: Configure Rust Nightly
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: rust-src
 
-    - name: Verificar Compilación General (Dry Run)
+    - name: Build library
       run: |
         RUSTFLAGS="-C target-cpu=atmega2560" cargo build --target avr-none -Z build-std=core
 
-    - name: Verificar Ejemplo de 6 Motores (Nuevo)
+    - name: Build example - control_6_motors_l298n
       run: |
         RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example control_6_motors_l298n --target avr-none -Z build-std=core
 
-    - name: Verificar Ejemplo BTS7960
+    - name: Build example - test_controller
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_controller --target avr-none -Z build-std=core
+
+    - name: Build example - test_encoders
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_encoders --target avr-none -Z build-std=core
+
+    - name: Build example - test_proximity
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_proximity --target avr-none -Z build-std=core
+
+    - name: Build example - test_bts7960
       run: |
         RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_bts7960 --target avr-none -Z build-std=core
 
-    - name: Verificar Ejemplo Servo
+    - name: Build example - test_servo
       run: |
         RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_servo --target avr-none -Z build-std=core
+
+    - name: Build example - test_l298n
+      run: |
+        RUSTFLAGS="-C target-cpu=atmega2560" cargo build --example test_l298n --target avr-none -Z build-std=core
