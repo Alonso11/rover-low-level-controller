@@ -183,7 +183,7 @@ RPI_EXTRA_CONFIG = " \
 **`recipes-core/custom-udev-rules`** — installs `99-arduino.rules` which
 creates the `/dev/arduino_mega` persistent symlink.
 
-**`recipes-core/python3-rover-bridge`** — Rust native extension (PyO3)
+**`recipes-apps/python3-rover-bridge`** — Rust native extension (PyO3)
 that wraps the serial port with a thread-safe `Mutex` and exposes it
 to Python:
 
@@ -230,4 +230,7 @@ UBRR = (f_CPU / (16 × baud)) − 1
 | `examples/test_rpi_communication.rs` | Arduino | USART1 echo test — verifies GPIO wiring |
 | `examples/validate_protocol.rs` | Arduino | Protocol validator via USB (PC terminal) |
 | `layers/meta-olympus/recipes-core/custom-udev-rules/` | RPi 5 | udev rules for `/dev/arduino_mega` |
-| `layers/meta-olympus/recipes-core/python3-rover-bridge/` | RPi 5 | Rust/PyO3 serial bridge |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/` | RPi 5 | Rust/PyO3 serial bridge (`rover_bridge.so`) |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_bridge_interactive.py` | RPi 5 | Script de control manual interactivo (probado en hardware) |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_bridge.py` | RPi 5 | Test automatizado del bridge Rust |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_rover.py` | RPi 5 | Test básico con pyserial (sin Rust) |
