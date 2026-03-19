@@ -1,70 +1,94 @@
-<!-- Version: v1.0 -->
-# Lógica de Protección y Máquina de Estados (Rover Olympus)
+<!-- Version: v1.1 -->
+# Protection Logic and Safety State Machine (Design Specification)
 
-Este documento describe la arquitectura de seguridad y la lógica de control de bajo nivel para proteger los drivers L298N y los motores DC mediante sensores virtuales (basados en modelos matemáticos y encoders).
+> **Status: Design specification — not yet implemented in firmware.**
+>
+> The stall detection currently implemented in `src/controller/mod.rs` uses
+> a simpler encoder-count based algorithm (see Section 4). The full I²t
+> thermal model described in Sections 1–3 is planned for a future iteration.
 
-## 1. Modelo de Sensor Virtual de Corriente
+This document describes the target safety architecture for protecting the
+L298N drivers and DC motors using virtual sensors (mathematical models +
+encoder feedback).
 
-Dado que el hardware no cuenta con sensores de corriente físicos (ACS712), se implementa un estimador basado en el modelo del motor DC:
+---
 
-### Fórmula de Estimación ($I_{est}$)
+## 1. Virtual Current Sensor Model
+
+Since the hardware has no physical current sensors (e.g. ACS712), current
+is estimated from the DC motor back-EMF model:
+
+### Estimation Formula
+
 $$I_{est} = \frac{(V_{bat} \cdot \text{DutyCycle}) - (K_e \cdot \omega)}{R_{motor}}$$
 
-*   **$V_{bat}$**: Voltaje actual de la batería (Leído por pin analógico o asumiendo nominal).
-*   **$K_e$**: Constante de fuerza contraelectromotriz (V/(rad/s)).
-*   **$\omega$**: Velocidad angular real leída de los encoders.
-*   **$R_{motor}$**: Resistencia interna de las bobinas.
+| Parameter | Description |
+| :--- | :--- |
+| $V_{bat}$ | Battery voltage (read via analog pin or assumed nominal) |
+| $K_e$ | Back-EMF constant (V·s/rad) — determined experimentally |
+| $\omega$ | Actual angular velocity from encoder (rad/s) |
+| $R_{motor}$ | Motor winding resistance (Ω) |
 
 ---
 
-## 2. Fusible Térmico Virtual (Algoritmo $I^2t$)
+## 2. Virtual Thermal Fuse (I²t Algorithm)
 
-Para proteger los componentes del calor acumulado por sobrecorrientes, se utiliza un acumulador de energía térmica ($E_{term}$):
+Accumulated thermal energy $E_{term}$ protects against sustained overcurrent:
 
-### Lógica de Acumulación
-En cada ciclo de control ($\Delta t = 100ms$):
-1.  Calcular $I_{est}$.
-2.  Si $I_{est} > I_{nominal}$: 
-    $$E_{term} = E_{term} + (I_{est}^2 - I_{nominal}^2) \cdot \Delta t$$
-3.  Si $I_{est} \leq I_{nominal}$: 
-    $$E_{term} = E_{term} - \text{Constante\_Enfriamiento} \cdot \Delta t$$
+### Accumulation Logic (per control cycle, $\Delta t = 100\,\text{ms}$)
 
-*Nota: $E_{term}$ nunca puede ser menor que 0.*
+1. Compute $I_{est}$.
+2. If $I_{est} > I_{nominal}$:
+$$E_{term} = E_{term} + (I_{est}^2 - I_{nominal}^2) \cdot \Delta t$$
+3. If $I_{est} \leq I_{nominal}$:
+$$E_{term} = \max\left(0,\; E_{term} - C_{cool} \cdot \Delta t\right)$$
+
+$E_{term}$ is clamped to 0 from below (no negative thermal energy).
 
 ---
 
-## 3. Niveles de Acción (Máquina de Estados de Seguridad)
+## 3. Safety State Machine
 
-El sistema opera en diferentes estados según el valor de $E_{term}$ y la detección de fallos:
-
-| Estado | Condición | Acción del Software | Recuperación |
+| State | Condition | Action | Recovery |
 | :--- | :--- | :--- | :--- |
-| **NORMAL** | $E_{term} < 70\%$ | Funcionamiento al 100%. | N/A |
-| **WARN** | $70\% \le E_{term} < 90\%$ | Envía log `HIGH_LOAD` a RPi. | Baja $E_{term}$ |
-| **LIMIT** | $E_{term} \ge 90\%$ | Reduce PWM máximo al 40%. | $E_{term} < 60\%$ |
-| **FAULT_STALL** | PWM > 30% & RPM < 5 | Corte inmediato (STOP). | Comando `RESET` |
-| **FAULT_OVERHEAT**| $E_{term} \ge 100\%$ | Corte inmediato (STOP). | Enfriamiento + `RESET` |
+| **NORMAL** | $E_{term} < 70\%$ | Full operation | — |
+| **WARN** | $70\% \le E_{term} < 90\%$ | Send `HIGH_LOAD` log to RPi | $E_{term}$ decreases |
+| **LIMIT** | $E_{term} \ge 90\%$ | Cap PWM at 40% | $E_{term} < 60\%$ |
+| **FAULT_STALL** | PWM > 30% and RPM < 5 | Immediate stop | `RESET` command |
+| **FAULT_OVERHEAT** | $E_{term} \ge 100\%$ | Immediate stop | Cool down + `RESET` |
 
 ---
 
-## 4. Detección de Bloqueo (Stall Detection)
+## 4. Stall Detection — Currently Implemented
 
-La detección de bloqueo es la protección más crítica para evitar que el driver L298N se queme instantáneamente:
+The firmware in `src/controller/mod.rs` uses a simpler model: if the encoder
+count does not change for 50 consecutive `update()` calls while the commanded
+speed is above 20%, the channel is declared stalled and stopped.
 
-### Algoritmo de Decisión
+```
+50 calls × 20 ms = 1 second of no encoder movement at |speed| > 20%
+```
+
+An emergency stop is triggered when 2 or more motors on the same side stall
+simultaneously.
+
 ```rust
-if (motor.pwm_duty > MIN_PWM_THRESHOLD) && (encoder.rpm < STALL_RPM_LIMIT) {
-    stall_timer += dt;
-    if (stall_timer > MAX_STALL_TIME) {
-        trigger_fault(STALL_ERROR);
-    }
+// Pseudocode of the current implementation
+if speed.abs() > 20 && encoder_count == last_count {
+    stall_timer += 1;
 } else {
     stall_timer = 0;
 }
+stalled = stall_timer > 50;
 ```
 
-## 5. Parámetros de Calibración Sugeridos (Motor 12V 100RPM)
-*   **$R_{motor}$**: ~2.5 $\Omega$
-*   **$I_{nominal}$**: 0.8 A
-*   **$I_{max\_L298N}$**: 2.0 A
-*   **$K_e$**: Por determinar experimentalmente.
+---
+
+## 5. Suggested Calibration Parameters (12V 100RPM Motor)
+
+| Parameter | Value |
+| :--- | :--- |
+| $R_{motor}$ | ~2.5 Ω |
+| $I_{nominal}$ | 0.8 A |
+| $I_{max\,L298N}$ | 2.0 A |
+| $K_e$ | Determine experimentally |

@@ -1,4 +1,5 @@
 # Implementation Considerations
+<!-- Version: v1.1 -->
 
 This document records non-obvious design decisions, constraints, and the
 reasoning behind them. It is intended as a reference for future maintainers.
@@ -131,7 +132,7 @@ are grouped by Timer Counter:
 
 | Timer | Pins (Arduino) | Motors assigned |
 |---|---|---|
-| Timer 1 | D11, D12, D13 | (reserved for servo) |
+| Timer 1 | D11, D12, D13 | (available) |
 | Timer 2 | D10, D9 | Front Right, Front Left |
 | Timer 3 | D5, D2 | Center Right, Center Left |
 | Timer 4 | D6, D7 | Rear Right, Rear Left |
@@ -146,9 +147,9 @@ motors run at the same PWM frequency.
 **Do not assign a motor to Timer 0** — it is used by `arduino_hal` for
 `delay_ms`/`delay_us` and modifying it corrupts timing functions.
 
-**Do not assign a motor to Timer 1** — it is reserved for the servo driver
-(`StandardServo`), which depends on Timer 1's 16-bit resolution for
-microsecond-accurate pulses.
+**Timer 1 is available for motors or other peripherals.** `StandardServo`
+uses software PWM via `delay_us` on any digital output pin — it does not
+depend on any hardware timer.
 
 ---
 
