@@ -1,4 +1,4 @@
-<!-- Version: v1.1 -->
+<!-- Version: v1.2 -->
 # Rover Low-Level Controller (Rust)
 
 Modular firmware for a 6-wheel rover, implemented in **embedded Rust** for the **ATmega2560** (Arduino Mega 2560). Acts as the hardware abstraction layer (HAL), receiving commands from a **Raspberry Pi 5** (Yocto Linux) over UART and driving motors, encoders, and proximity sensors.
@@ -84,3 +84,10 @@ stall thresholds, `no_std` test limitations) are documented in
 Hardware pin mapping and peripheral timer assignments:
 [`docs/the_pins_connections.md`](docs/the_pins_connections.md) —
 [`docs/peripheral_timers.md`](docs/peripheral_timers.md)
+
+## Hardware References
+
+- **ATmega2560 Datasheet** — [Microchip official](https://www.microchip.com/en-us/product/atmega2560) (download from product page)
+- **Arduino Mega 2560 Pin Mapping** — [Arduino official docs](https://docs.arduino.cc/hacking/hardware/PinMapping2560)
+- **HC-SR04 Datasheet** — [SparkFun](https://cdn.sparkfun.com/datasheets/Sensors/Proximity/HCSR04.pdf)
+- **TF-Luna Datasheet** — [Benewake official](https://en.benewake.com/TF-Luna/index_proid_325.html)
