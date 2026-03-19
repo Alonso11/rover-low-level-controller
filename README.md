@@ -85,6 +85,9 @@ Hardware pin mapping and peripheral timer assignments:
 [`docs/the_pins_connections.md`](docs/the_pins_connections.md) —
 [`docs/peripheral_timers.md`](docs/peripheral_timers.md)
 
+RPi 5 ↔ Arduino Mega communication (why UART, wiring, protocol, RPi setup):
+[`docs/rpi5_uart_communication.md`](docs/rpi5_uart_communication.md)
+
 ## Hardware References
 
 - **ATmega2560 Datasheet** — [Microchip official](https://www.microchip.com/en-us/product/atmega2560) (download from product page)
