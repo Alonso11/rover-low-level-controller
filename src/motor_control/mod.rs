@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 //! # Módulo de Control de Motores
 //! 
 //! Este módulo proporciona la abstracción necesaria para controlar diferentes tipos de motores
@@ -37,3 +37,7 @@ pub mod bts7960;
 
 /// Implementación para servomotores estándar mediante control por software.
 pub mod servo;
+
+/// Type-erased motor wrapper for heterogeneous arrays (no heap required).
+pub mod erased;
+pub use erased::ErasedMotor;
