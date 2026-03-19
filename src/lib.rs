@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 #![no_std]
 #![feature(abi_avr_interrupt)]
 
@@ -7,3 +7,4 @@ pub use nb;
 pub mod motor_control;
 pub mod command_interface;
 pub mod sensors;
+pub mod controller;
