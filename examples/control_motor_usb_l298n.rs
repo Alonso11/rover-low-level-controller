@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v2.0 - Pinout verificado físicamente
 #![no_std]
 #![no_main]
 
@@ -16,29 +16,24 @@ fn main() -> ! {
     let serial = arduino_hal::default_serial!(dp, pins, 115200);
     let mut interface = CommandInterface::new(serial);
 
-    // Configuración de Timers para el Puente H Frontal (Timer 2)
-    // Usamos Timer2 porque controla los motores frontales en el diseño del Rover de 6 ruedas.
-    // Esto asegura compatibilidad con el hardware real.
     let mut timer2 = arduino_hal::simple_pwm::Timer2Pwm::new(
         dp.TC2,
         arduino_hal::simple_pwm::Prescaler::Prescale64,
     );
 
-    // --- Motor Derecho (Frontal) ---
-    // PWM: D10 (OC2A)
-    // Dirección: D22, D23
-    let motor_right_pwm = pins.d10.into_output().into_pwm(&mut timer2);
-    let motor_right_in1 = pins.d22.into_output();
-    let motor_right_in2 = pins.d23.into_output();
+    // --- Motor Derecho (Frontal) — D9/ENB/OC2B ---
+    // ENA=D9, IN3=D23, IN4=D25
+    let motor_right_pwm = pins.d9.into_output().into_pwm(&mut timer2);
+    let motor_right_in1 = pins.d23.into_output(); // IN3 (canal B)
+    let motor_right_in2 = pins.d25.into_output(); // IN4 (canal B)
     let mut motor_right = L298NMotor::new(motor_right_pwm, motor_right_in1, motor_right_in2, false);
 
-    // --- Motor Izquierdo (Frontal) ---
-    // PWM: D9 (OC2B)
-    // Dirección: D24, D25
-    let motor_left_pwm = pins.d9.into_output().into_pwm(&mut timer2);
-    let motor_left_in3 = pins.d24.into_output();
-    let motor_left_in4 = pins.d25.into_output();
-    let mut motor_left = L298NMotor::new(motor_left_pwm, motor_left_in3, motor_left_in4, false);
+    // --- Motor Izquierdo (Frontal) — D10/ENA/OC2A ---
+    // ENA=D10, IN1=D22, IN2=D24
+    let motor_left_pwm = pins.d10.into_output().into_pwm(&mut timer2);
+    let motor_left_in1 = pins.d22.into_output(); // IN1 (canal A)
+    let motor_left_in2 = pins.d24.into_output(); // IN2 (canal A)
+    let mut motor_left = L298NMotor::new(motor_left_pwm, motor_left_in1, motor_left_in2, false);
 
     interface.log("Rover Olympus USB listo (Motores Frontales)");
 
