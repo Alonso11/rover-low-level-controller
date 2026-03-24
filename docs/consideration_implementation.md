@@ -286,7 +286,56 @@ Integration of layers 1 and 2 is the next planned milestone.
 
 ---
 
-## 5. `no_std` and the Native Test Limitation
+## 5. HC-SR04 Polling vs Interrupt-Based Measurement
+
+### Current Implementation (v2.1) — Polling Every 5 Cycles
+
+The HC-SR04 driver (`sensors/hc_sr04.rs`) uses busy-wait loops to measure
+echo pulse duration:
+
+```rust
+while self.echo.is_low()  { count += 1; if count > 20_000 { return None; } }
+while self.echo.is_high() { duration_us += 1; delay_us(1); if > 30_000 { return None; } }
+```
+
+In the worst case (no echo / out of range) this blocks for **up to 30 ms**,
+exceeding the 20 ms main loop period and delaying watchdog, UART, and motor
+updates.
+
+**Chosen mitigation**: read HC-SR04 every `HC_READ_PERIOD = 5` cycles
+(~100 ms). At 0.5 m/s the rover travels ~5 cm between readings — acceptable
+for the emergency stop use case (threshold: 20 cm). The constant
+`HC_READ_PERIOD` in `main.rs` can be tuned if the rover's max speed changes.
+
+### Future Migration: Interrupt-Based Measurement
+
+The correct long-term solution is to measure the echo pulse using a hardware
+external interrupt:
+
+1. **Trigger** the pulse from the main loop (10 µs HIGH on D38).
+2. **Rising edge ISR** on D39 (INT6/PE6 — check pin availability): record
+   `start = current_timer_ticks`.
+3. **Falling edge ISR** on D39: compute `duration = current_timer_ticks - start`,
+   store result in a `Mutex<Cell<Option<u16>>>`.
+4. **Main loop** reads the stored value without blocking.
+
+This approach would:
+- Eliminate blocking from the main loop entirely
+- Allow reading every cycle (20 ms) instead of every 100 ms
+- Free CPU cycles during echo wait
+
+**Prerequisite**: verify D39 (PG2) supports external interrupts on the
+ATmega2560. PG2 is not on a standard INTn pin — it may require using
+Pin Change Interrupts (PCINT) instead, which add complexity. Check the
+ATmega2560 datasheet (Table 13-1) before implementing.
+
+**Also note**: the encoder ISRs already use `avr_device::interrupt::Mutex<Cell<T>>`
+for the same pattern. The HC-SR04 interrupt implementation should follow that
+same structure.
+
+---
+
+## 6. `no_std` and the Native Test Limitation
 
 `cargo test --target x86_64-unknown-linux-gnu` fails because `.cargo/config.toml`
 sets `build-std = ["core"]` globally. This causes a `core` symbol duplication
