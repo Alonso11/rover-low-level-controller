@@ -130,26 +130,26 @@ All call sites in `Motor` trait impl use safe wrappers that encapsulate the
 Each L298N motor requires one PWM-capable pin. On the ATmega2560, PWM pins
 are grouped by Timer Counter:
 
-| Timer | Pins (Arduino) | Motors assigned |
+| Timer | Pins (Arduino) | Assigned use |
 |---|---|---|
-| Timer 1 | D11, D12, D13 | (available) |
-| Timer 2 | D10, D9 | Front Right, Front Left |
-| Timer 3 | D5, D2 | Center Right, Center Left |
-| Timer 4 | D6, D7 | Rear Right, Rear Left |
-| Timer 5 | D46, D45 | (available) |
+| Timer 0 | D4, D13 | **Sistema** — `delay_ms`/`delay_us` (no tocar) |
+| Timer 1 | D11, D12, D13 | **Servo** — D11 (OC1A) a 50Hz |
+| Timer 2 | D9, D10 | Front Right (OC2B), Front Left (OC2A) |
+| Timer 3 | D5, D2, D3 | Center Right (OC3A) — D2/D3 libres para INT4/INT5 |
+| Timer 4 | D6, D7, D8 | Center Left (OC4A), Rear Right (OC4B), Rear Left (OC4C) |
+| Timer 5 | D46, D45, D44 | Libre — disponible para expansión |
 
-Using separate timers per motor pair avoids contention on shared timer
-registers and allows independent duty cycle control. Two motors sharing the
-same timer can still have independent duty cycles (OC channel A vs B), but
-share the same frequency and prescaler — which is acceptable since all
-motors run at the same PWM frequency.
+Two motors can share a timer if they use different OC channels (e.g. Timer4
+drives three motors on OC4A, OC4B, OC4C independently). They share the same
+prescaler and frequency, which is acceptable since all motors run at the same
+PWM frequency (~1 kHz with Prescale64).
 
 **Do not assign a motor to Timer 0** — it is used by `arduino_hal` for
 `delay_ms`/`delay_us` and modifying it corrupts timing functions.
 
-**Timer 1 is available for motors or other peripherals.** `StandardServo`
-uses software PWM via `delay_us` on any digital output pin — it does not
-depend on any hardware timer.
+**Timer 1 is reserved for the servo.** Hardware Timer1 (16-bit) generates
+an exact 50Hz signal for the servo (Prescale8, TOP=39999). Do not assign
+motors to D11, D12, or D13.
 
 ---
 
@@ -174,7 +174,119 @@ frequency.
 
 ---
 
-## 4. `no_std` and the Native Test Limitation
+## 4. Sensor Architecture — Layered Safety Model
+
+### Context
+
+The rover has three sensing modalities physically attached to the Arduino:
+- **HC-SR04** (ultrasonic) — short range, ~2–400 cm, ±3 cm accuracy
+- **TF-Luna** (LiDAR, USART2) — medium range, 20–800 cm, ±2 cm accuracy
+- **Hall encoders** (×6, interrupts) — motor shaft rotation, stall detection
+
+In addition, the RPi5 carries a **camera** used for AI-based navigation.
+
+### The Question
+
+Should the Arduino read its own sensors and act on them, or should it just
+report raw data to the RPi5 and let the RPi5 make all decisions?
+
+### Why Pure-Slave Architecture Is Insufficient
+
+If the Arduino only executes commands from the RPi5 (no local sensor
+processing), then the safety response chain is:
+
+```
+obstacle appears
+  → camera frame captured (~33 ms at 30 fps)
+  → AI inference (~50–150 ms)
+  → RPi5 sends AVD over UART (~1 ms)
+  → Arduino receives and acts (~20 ms loop)
+  ─────────────────────────────────────────
+  Total latency: ~100–200 ms
+```
+
+At 0.5 m/s the rover travels 5–10 cm before stopping. For a close obstacle
+(< 30 cm) this is not safe. Furthermore, if the UART link drops or the RPi5
+crashes, the rover keeps moving indefinitely.
+
+### Chosen Architecture: Three Independent Safety Layers
+
+Each layer operates at its own frequency and has authority to override
+lower-priority layers:
+
+```
+Layer 3 — RPi5 + Camera (strategic, ~100 ms)
+  Purpose : path planning, navigation, AI decisions
+  Action  : sends EXP:L:R, AVD:L/R, STB commands
+  Scope   : everything the camera can see
+
+Layer 2 — TF-Luna on Arduino (tactical, ~20 ms loop)
+  Purpose : detect obstacles the camera may miss (low objects, dust)
+  Action  : if dist < 40 cm while EXPLORE → force AVD locally
+  Scope   : forward arc, 20–400 cm
+
+Layer 1 — HC-SR04 on Arduino (emergency, ~20 ms loop)
+  Purpose : last-resort physical barrier protection
+  Action  : if dist < 20 cm → FAULT (hard stop, motors off)
+  Scope   : forward arc, < 30 cm
+  Authority: overrides RPi5 commands — cannot be suppressed remotely
+```
+
+### Why the Arduino Must Act Locally for Safety
+
+The SRS defines `Task_Safety` as the **highest-priority task on Nodo B**.
+This means the Arduino must be capable of stopping the rover independently
+of the RPi5. Reasons:
+
+1. **UART link can fail** — watchdog handles communication loss, but sensor
+   data in transit can arrive late or not at all.
+2. **Camera has blind spots** — objects below the camera frame, dust clouds,
+   or sudden close-range appearances after a maneuver are invisible to AI.
+3. **RPi5 processing latency** — ~100–200 ms end-to-end is too slow for
+   emergency stops at close range.
+4. **Fail-safe by design** — if the RPi5 crashes, the Arduino should still
+   protect the hardware. A pure-slave design violates this principle.
+
+### Telemetry Extension
+
+To allow the RPi5 to fuse sensor data with camera data, the Arduino will
+extend the TLM frame to include sensor readings:
+
+```
+Current : TLM:<SAFETY>:<STALL_MASK>\n
+Extended: TLM:<SAFETY>:<STALL_MASK>:<HC_CM>:<TF_CM>\n
+Example : TLM:NORMAL:000000:038:0120\n
+                              ^     ^
+                              HC-SR04 (38 cm)
+                                    TF-Luna (120 cm)
+```
+
+This lets the RPi5 use Arduino sensor data as a secondary input to its
+navigation model without giving up local safety authority.
+
+### Responsibility Matrix
+
+| Sensor | Node | Decision | Max latency |
+|---|---|---|---|
+| Camera | RPi5 | Navigation, path planning | ~150 ms |
+| TF-Luna | Arduino | Tactical avoidance | ~20 ms |
+| HC-SR04 | Arduino | Emergency hard stop | ~20 ms |
+| Encoders | Arduino | Stall → FAULT | ~20 ms |
+
+### Current Implementation Status (v2.0)
+
+As of `feature/msm-main-integration`, the MSM loop is functional but sensors
+are not yet wired into the safety layers:
+
+- `update_safety(0)` is hardcoded — stall detection disabled
+- HC-SR04 and TF-Luna are not read in `main.rs`
+- TLM frame does not include distance readings
+
+Integration of layers 1 and 2 is the next planned milestone.
+
+---
+
+## 5. `no_std` and the Native Test Limitation
 
 `cargo test --target x86_64-unknown-linux-gnu` fails because `.cargo/config.toml`
 sets `build-std = ["core"]` globally. This causes a `core` symbol duplication
