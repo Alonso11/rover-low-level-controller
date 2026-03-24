@@ -248,6 +248,16 @@ fn test_watchdog_no_corre_en_fault() {
     assert_eq!(msm.state, RoverState::Fault);
 }
 
+#[test]
+fn test_watchdog_no_corre_en_standby() {
+    let mut msm = MasterStateMachine::new();
+    // 200 ticks en STANDBY → nunca debe ir a FAULT
+    for _ in 0..200 {
+        assert_eq!(msm.tick(), None);
+    }
+    assert_eq!(msm.state, RoverState::Standby);
+}
+
 // ─── Safety / Stall ───────────────────────────────────────────────────────────
 
 #[test]

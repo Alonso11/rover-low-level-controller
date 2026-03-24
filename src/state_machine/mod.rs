@@ -100,9 +100,12 @@ impl MasterStateMachine {
     /// Llamar cada ciclo de loop (~20 ms).
     /// Devuelve `Some(Response::ErrWatchdog)` si el watchdog expira.
     pub fn tick(&mut self) -> Option<Response> {
-        // En FAULT el watchdog no corre: el rover ya está parado.
-        if self.state == RoverState::Fault {
-            return None;
+        // El watchdog solo corre en estados de movimiento activo.
+        // En STANDBY el rover ya está parado — no hay peligro.
+        // En FAULT ya está manejado — el watchdog no añade nada.
+        match self.state {
+            RoverState::Explore | RoverState::Avoid | RoverState::Retreat => {}
+            _ => return None,
         }
         self.watchdog = self.watchdog.saturating_add(1);
         if self.watchdog >= WATCHDOG_MAX {
