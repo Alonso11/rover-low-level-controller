@@ -335,7 +335,97 @@ same structure.
 
 ---
 
-## 6. `no_std` and the Native Test Limitation
+## 6. Encoder Integration — Static ISR Pattern
+
+### Why `static` for HallEncoders
+
+AVR interrupt service routines (ISRs) are global functions with no arguments.
+They cannot capture local variables. The only way to share state between an
+ISR and the main loop is through `static` variables.
+
+`HallEncoder` contains `Mutex<Cell<i32>>` from `avr_device::interrupt`.
+`avr_device::Mutex<T>` is `Sync` for any `T` on AVR (single-core, so mutual
+exclusion is achieved by disabling interrupts, not with hardware locks). This
+makes `HallEncoder` safe to declare as `static`.
+
+```rust
+static ENCODER_FR: HallEncoder = HallEncoder::new(); // requires const fn new()
+```
+
+`HallEncoder::new()` is `const fn`, so this is zero-cost — the struct is
+placed in `.bss` / `.data` at link time, no runtime initialization.
+
+### ISR Declaration
+
+avr-device requires the chip name in **lowercase** in the interrupt attribute.
+Using `ATmega2560` (PascalCase) causes a compile error even though the PAC
+enum uses `ATmega2560`:
+
+```rust
+// ✓ correct
+#[avr_device::interrupt(atmega2560)]
+fn INT0() { ENCODER_FR.pulse(); }
+
+// ✗ wrong — compile_error: Couldn't find interrupt INT0, for MCU ATmega2560
+#[avr_device::interrupt(ATmega2560)]
+fn INT0() { ENCODER_FR.pulse(); }
+```
+
+### Why USART3 Was Critical for 6 Encoders
+
+The original firmware used USART1 (D18/D19) for RPi5 communication.
+This blocked INT2 (D19) and INT3 (D18), leaving only 4 encoder slots
+(INT0, INT1, INT4, INT5 = front and rear wheels).
+
+Moving to USART3 (D14/D15) freed D18 and D19 for encoders, enabling
+full 6-motor stall detection without hardware conflicts.
+
+| INT   | Pin | Encoder       | Available with USART1 | Available with USART3 |
+|-------|-----|---------------|-----------------------|-----------------------|
+| INT0  | D21 | Front Right   | ✅                    | ✅                    |
+| INT1  | D20 | Front Left    | ✅                    | ✅                    |
+| INT2  | D19 | Center Right  | ❌ (USART1 RX)        | ✅                    |
+| INT3  | D18 | Center Left   | ❌ (USART1 TX)        | ✅                    |
+| INT4  | D2  | Rear Right    | ✅                    | ✅                    |
+| INT5  | D3  | Rear Left     | ✅                    | ✅                    |
+
+### Stall Detection Algorithm
+
+Each cycle (~20 ms) the loop reads all 6 encoder counters and compares
+with the previous cycle. If a motor runs above `STALL_SPEED_MIN` (20%)
+and its encoder count does not change, a per-motor `stall_timer` increments.
+When `stall_timer > STALL_THRESHOLD` (50 cycles = ~1 s), the bit for that
+motor is set in `stall_mask`, and `msm.update_safety(stall_mask)` is called.
+
+This mirrors the logic in `DriveChannel::check_stall` (controller/mod.rs)
+but operates directly in `main.rs` to avoid the `ErasedMotor` complexity
+that `RoverController` would require. See §1 for context.
+
+### Hardware Register Setup (EICRA / EICRB / EIMSK)
+
+The PAC exposes EXINT registers via getter methods (not public fields):
+
+```rust
+dp.EXINT.eicra().write(|w| unsafe { w.bits(0xFF) }); // INT0–INT3 rising edge
+dp.EXINT.eicrb().write(|w| unsafe { w.bits(0x0F) }); // INT4–INT5 rising edge
+dp.EXINT.eimsk().write(|w| unsafe { w.bits(0x3F) }); // enable INT0–INT5
+unsafe { avr_device::interrupt::enable() };
+```
+
+`0xFF` in EICRA sets ISCn1=1, ISCn0=1 for each of INT0–INT3 (rising edge).
+`0x0F` in EICRB sets ISC4=rising, ISC5=rising (bits 1:0 and 3:2).
+`0x3F` = 0b00111111 enables INT0 through INT5 in EIMSK.
+
+### Reducing to Fewer Than 6 Encoders
+
+If fewer encoders are physically installed, remove or comment the
+corresponding `static`, ISR, and speed entry. The `stall_mask` bit for
+that motor will never be set (counter stays at 0, speed check fails).
+No other code needs to change.
+
+---
+
+## 7. `no_std` and the Native Test Limitation
 
 `cargo test --target x86_64-unknown-linux-gnu` fails because `.cargo/config.toml`
 sets `build-std = ["core"]` globally. This causes a `core` symbol duplication
