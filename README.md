@@ -44,14 +44,14 @@ rustup component add rust-src --toolchain nightly
 
 **Verify the full library compiles:**
 ```bash
-RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --target avr-none -Z build-std=core
+RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build -Zjson-target-spec
 ```
 
 ## Examples
 
 Build any example with:
 ```bash
-RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --example <name> --target avr-none -Z build-std=core
+RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --example <name> -Zjson-target-spec
 ```
 
 | Example | Description |
@@ -72,7 +72,7 @@ RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build --example <name> --tar
 
 ```bash
 RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" \
-  cargo +nightly run --example <name> --target avr-none -Z build-std=core
+  cargo +nightly run --example <name> -Zjson-target-spec
 ```
 
 ## Design Notes

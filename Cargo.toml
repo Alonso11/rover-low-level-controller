@@ -19,7 +19,7 @@ required-features = ["avr"]
 # "avr" activa todos los drivers y HAL; viene ON por defecto para builds normales.
 # Para tests nativos x86: cargo usa --no-default-features, que lo desactiva.
 default = ["avr"]
-avr = []
+avr = ["panic-halt", "avr-device", "arduino-hal"]
 
 # ─── Dependencias ─────────────────────────────────────────────────────────────
 [dependencies]
