@@ -52,11 +52,19 @@ where
         &self.buffer[..len]
     }
 
-    /// Envía un mensaje de log a la RPi 5.
+    /// Envía un mensaje de log a la RPi 5 (añade \n automáticamente).
     pub fn log(&mut self, msg: &str) {
         for b in msg.as_bytes() {
             let _ = nb::block!(self.serial.write(*b));
         }
         let _ = nb::block!(self.serial.write(b'\n'));
+    }
+
+    /// Envía un frame de respuesta pre-formateado (ya incluye \n).
+    /// Usar con `format_response()` del módulo `state_machine`.
+    pub fn send_response(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            let _ = nb::block!(self.serial.write(b));
+        }
     }
 }
