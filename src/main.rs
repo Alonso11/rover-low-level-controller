@@ -14,7 +14,7 @@
 //! ## Asignación de pines:
 //!   - USART3 D14(TX3)/D15(RX3) → RPi5 @ 115200
 //!     NOTA: Se usa USART3 (no USART1) para liberar D18/D19 para encoders.
-//!   - Timer2 D9(FR) D10(FL) | Timer4 D8(CR) D7(CL) D6(RR) | Timer3 D5(RL)
+//!   - Timer2 D9(FR) D10(FL) | Timer3 D5(CR) | Timer4 D6(CL) D7(RR) D8(RL)
 //!   - Dirección motores: D22–D37
 //!   - HC-SR04: D38(Trigger) D39(Echo)
 //!   - Encoders: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
@@ -138,10 +138,10 @@ fn main() -> ! {
     // ── 6 Motores — layout verificado en control_6_motors_l298n.rs v3.0 ─────
     let fr = L298NMotor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d23.into_output(), pins.d25.into_output(), false);
     let fl = L298NMotor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d22.into_output(), pins.d24.into_output(), false);
-    let cr = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4),  pins.d28.into_output(), pins.d30.into_output(), false);
-    let cl = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4),  pins.d29.into_output(), pins.d31.into_output(), false);
-    let rr = L298NMotor::new(pins.d6.into_output().into_pwm(&mut timer4),  pins.d34.into_output(), pins.d35.into_output(), false);
-    let rl = L298NMotor::new(pins.d5.into_output().into_pwm(&mut timer3),  pins.d36.into_output(), pins.d37.into_output(), false);
+    let cr = L298NMotor::new(pins.d5.into_output().into_pwm(&mut timer3),  pins.d28.into_output(), pins.d29.into_output(), false);
+    let cl = L298NMotor::new(pins.d6.into_output().into_pwm(&mut timer4),  pins.d30.into_output(), pins.d31.into_output(), false);
+    let rr = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4),  pins.d34.into_output(), pins.d35.into_output(), false);
+    let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4),  pins.d36.into_output(), pins.d37.into_output(), false);
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
 
     // ── HC-SR04 — D38(Trigger), D39(Echo) ───────────────────────────────────
