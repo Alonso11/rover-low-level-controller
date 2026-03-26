@@ -119,15 +119,9 @@ fn main() -> ! {
     let dp   = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
 
-    // ── USART3: Comunicación con RPi5 (D14=TX3, D15=RX3) ────────────────────
-    // Se eligió USART3 sobre USART1 para liberar D18/D19 (INT2/INT3) para
-    // los encoders de los motores centrales. Ver consideration_implementation §6.
-    let serial_rpi = arduino_hal::Usart::new(
-        dp.USART3,
-        pins.d15,
-        pins.d14.into_output(),
-        115200_u32.into_baudrate(),
-    );
+    // ── USART0: USB — temporal para test desde PC ────────────────────────────
+    // En producción usar USART3 (D14/D15) para la RPi5.
+    let serial_rpi = arduino_hal::default_serial!(dp, pins, 115200);
     let mut iface = CommandInterface::new(serial_rpi);
 
     // ── Timers PWM ───────────────────────────────────────────────────────────
@@ -179,18 +173,18 @@ fn main() -> ! {
             iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
 
-        // 2. HC-SR04 — capa de emergencia (cada ~100 ms)
-        hc_counter = hc_counter.wrapping_add(1);
-        if hc_counter >= HC_READ_PERIOD {
-            hc_counter = 0;
-            if let Some(mm) = hcsr04.measure_mm() {
-                if mm < HC_EMERGENCY_MM {
-                    let resp = msm.process(Command::Fault);
-                    sync_drive!(rover, msm);
-                    iface.send_response(format_response(resp, &mut resp_buf));
-                }
-            }
-        }
+        // 2. HC-SR04 — deshabilitado para test sin hardware
+        // hc_counter = hc_counter.wrapping_add(1);
+        // if hc_counter >= HC_READ_PERIOD {
+        //     hc_counter = 0;
+        //     if let Some(mm) = hcsr04.measure_mm() {
+        //         if mm < HC_EMERGENCY_MM {
+        //             let resp = msm.process(Command::Fault);
+        //             sync_drive!(rover, msm);
+        //             iface.send_response(format_response(resp, &mut resp_buf));
+        //         }
+        //     }
+        // }
 
         // 3. Stall detection via encoders
         // Lee los 6 contadores y compara con el ciclo anterior.
@@ -230,7 +224,27 @@ fn main() -> ! {
 
         // 4. Comando entrante desde RPi5
         if iface.poll_command() {
-            let response = match parse_command(iface.get_command()) {
+            // Copiar a buffer local para liberar el borrow de iface
+            let mut cmd_buf = [0u8; 32];
+            let cmd_len = {
+                let raw = iface.get_command();
+                let len = raw.len().min(32);
+                cmd_buf[..len].copy_from_slice(&raw[..len]);
+                len
+            };
+            let cmd_bytes = &cmd_buf[..cmd_len];
+            // DEBUG: echo hex de los bytes recibidos
+            iface.log("DBG:");
+            for &b in cmd_bytes {
+                let hi = b >> 4;
+                let lo = b & 0xF;
+                let h = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+                let l = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+                resp_buf[0] = h; resp_buf[1] = l; resp_buf[2] = b' ';
+                iface.send_response(&resp_buf[..3]);
+            }
+            iface.send_response(b"\n");
+            let response = match parse_command(cmd_bytes) {
                 Some(cmd) => msm.process(cmd),
                 None      => Response::ErrUnknown,
             };
@@ -246,6 +260,7 @@ fn main() -> ! {
             iface.send_response(format_response(msm.telemetry(0), &mut resp_buf));
         }
 
-        arduino_hal::delay_ms(LOOP_MS);
+        // Sin delay: poll_command corre continuamente para no saturar FIFO USART (3 bytes)
+        // Producción: implementar USART RX interrupt con ring buffer
     }
 }
