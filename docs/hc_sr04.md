@@ -1,49 +1,31 @@
-# Sensor Ultrasónico HC-SR04
+# Documentación HC-SR04 - Diagnóstico y Solución de Errores
 
-El **HC-SR04** es un sensor de proximidad ultrasónico que utiliza el tiempo de vuelo (ToF) de ondas sonoras para determinar la distancia a un objeto.
+## 1. Identificación del Problema
+Durante las pruebas de integración con el sensor ultrasónico HC-SR04, se detectaron fallos intermitentes en la lectura. El síntoma principal era un `ECHO timeout (no sube)`, indicando que el sensor ignoraba el pulso de disparo (Trigger) de forma aleatoria.
 
-## Especificaciones Técnicas
-| Parámetro | Valor |
-| :--- | :--- |
-| Voltaje de Operación | 5V DC |
-| Corriente de Operación | 15 mA |
-| Frecuencia ultrasónica | 40 kHz |
-| Rango Máximo | 400 cm (4 m) |
-| Rango Mínimo | 2 cm |
-| Ángulo de medición | < 15° |
-| Resolución | 0.3 cm |
+**Entorno de prueba:**
+- Microcontrolador: ATmega2560
+- Pines probados: D38/D39 y D40/D41
+- Objeto de prueba: Silla a ~90-130cm
 
-## Principio de Funcionamiento
-1. Se envía un pulso de nivel alto de **10µs** al pin `Trigger`.
-2. El módulo envía automáticamente ocho ráfagas de 40 kHz y detecta si hay un pulso de retorno.
-3. Si hay una señal de retorno, el pin `Echo` se pone en ALTO. 
-4. La duración de este pulso ALTO es el tiempo que tarda el sonido en ir y volver del objeto.
+## 2. Hallazgos Técnicos
+- **Ruido Eléctrico:** Los sensores HC-SR04 son altamente sensibles a la estabilidad del voltaje de 5V.
+- **Latencia de Hardware:** Algunos sensores no responden al estándar de 10µs para el pulso de Trigger.
+- **Inestabilidad:** Aproximadamente el 30-50% de las lecturas fallaban por hardware, devolviendo un estado nulo.
 
-### Fórmula de Cálculo
-La distancia se calcula multiplicando el tiempo por la velocidad del sonido (343 m/s o 0.0343 cm/µs) y dividiendo por 2 (ida y vuelta).
+## 3. Solución Implementada (Driver v1.1)
+Para mitigar estos fallos sin sacrificar la respuesta en tiempo real del Rover, se aplicaron las siguientes mejoras en `src/sensors/hc_sr04.rs`:
 
-$$Distancia (mm) = \frac{Tiempo (µs) \times 0.343}{2}$$
+### A. Robustez por Software
+- **Estado de Memoria:** Se añadió el campo `last_valid` a la estructura `HCSR04` para almacenar la última distancia exitosa.
+- **Filtro de Errores:** Si una medición falla por timeout, el driver devuelve la última distancia conocida.
+- **Detección de Desconexión:** Si se superan los **5 errores consecutivos**, el driver invalida la persistencia y retorna `None`, permitiendo al sistema saber que el sensor ha fallado realmente.
 
-## Implementación en el Proyecto
-En este proyecto, el driver se encuentra en `src/sensors/hc_sr04.rs` e implementa el trait `ProximitySensor`.
+### B. Ajustes de Temporización
+- **Pulso de Trigger:** Aumentado de 10µs a **20µs** para asegurar la detección en sensores lentos.
+- **Pre-pulso (Hold):** Se añadió un retraso de **10µs** en estado bajo antes del disparo para limpiar la línea de posibles ruidos.
 
-### Conexión en Arduino Mega 2560
-| Pin Sensor | Pin Arduino | Función |
-| :--- | :--- | :--- |
-| VCC | 5V | Alimentación |
-| Trig | **D14** | Disparo del pulso |
-| Echo | **D15** | Recepción del eco |
-| GND | GND | Tierra |
-
-### Ejemplo de Código
-```rust
-let mut hc_sr04 = HCSR04::new(pins.d14.into_output(), pins.d15.into_floating_input().forget_imode());
-if let Some(dist) = hc_sr04.get_distance_mm() {
-    // Uso de la distancia en mm
-}
-```
-
-## Notas de Implementación
-- El driver utiliza `arduino_hal::delay_us` para medir la duración del pulso.
-- Se ha implementado un **Timeout** de 30ms (equivalente a una distancia fuera de rango de ~5 metros) para evitar bloqueos del procesador si no se recibe eco.
-- Se recomienda un intervalo de al menos 60ms entre mediciones para evitar interferencias.
+## 4. Validación Final
+Se utilizó el ejemplo `test_hcsr04_filtered.rs` para validar la solución.
+- **Resultado:** Salida estable y continua de distancia (ej. 528mm, 539mm) sin interrupciones por timeout.
+- **Conclusión:** El sistema es ahora capaz de navegar ignorando los parpadeos aleatorios del hardware.
