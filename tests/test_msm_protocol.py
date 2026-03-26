@@ -29,15 +29,20 @@ BOOT_WAIT = 2.0  # espera tras reset por DTR
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+RESPONSE_PREFIXES = ("PONG", "ACK:", "ERR:")
+
 def send(s: serial.Serial, cmd: bytes) -> str:
+    """Envía un comando y retorna la primera línea de respuesta del protocolo MSM.
+
+    Descarta líneas de telemetría (TLM:), debug (DBG:), hex dump y vacías.
+    Solo acepta líneas que empiecen con un prefijo válido del protocolo.
+    """
     s.write(cmd)
-    resp = s.readline().decode(errors="ignore").strip()
-    # Descartar líneas de telemetría o debug que lleguen antes de la respuesta
-    while resp.startswith("TLM:") or resp.startswith("DBG:") or resp == "":
-        resp = s.readline().decode(errors="ignore").strip()
-        if not resp:
-            break
-    return resp
+    for _ in range(32):  # máximo 32 líneas antes de rendirse
+        line = s.readline().decode(errors="ignore").strip()
+        if any(line.startswith(p) for p in RESPONSE_PREFIXES):
+            return line
+    return ""
 
 def check(label: str, got: str, expected: str):
     ok = got == expected

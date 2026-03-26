@@ -1,4 +1,4 @@
-// Version: v2.2
+// Version: v2.3
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -33,7 +33,7 @@
 
 use panic_halt as _;
 use arduino_hal::simple_pwm::{IntoPwmPin, Prescaler, Timer2Pwm, Timer3Pwm, Timer4Pwm};
-use rover_low_level_controller::command_interface::CommandInterface;
+use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuffer};
 use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
@@ -100,6 +100,33 @@ fn INT4() { ENCODER_RR.pulse(); }
 #[avr_device::interrupt(atmega2560)]
 fn INT5() { ENCODER_RL.pulse(); }
 
+// ─── Ring buffer USART RX (interrupt-driven) ─────────────────────────────────
+//
+// El FIFO hardware USART del ATmega2560 tiene solo 3 bytes. Con delay_ms(20)
+// en el loop, un comando de 5+ bytes llega completo en ~434 µs y los últimos
+// bytes se pierden por overflow (DOR). Ver docs/debug_usart_overflow.md.
+//
+// Solución: la ISR USART_RX copia cada byte recibido en este ring buffer de
+// 64 bytes. poll_from_ring() lo drena en cada iteración del loop sin importar
+// si el CPU estuvo bloqueado los últimos 20 ms.
+//
+// MODO TEST (actual): USART0 (USB) — ISR: USART0_RX, registro: UDR0
+// MODO PRODUCCIÓN:    USART3 (RPi) — cambiar ISR a USART3_RX y leer UDR3
+
+static RX_BUF: RxRingBuffer = RxRingBuffer::new();
+
+/// ISR USART0 RX Complete — copia byte recibido al ring buffer.
+/// En producción (USART3) renombrar a USART3_RX y leer UDR3.
+#[avr_device::interrupt(atmega2560)]
+fn USART0_RX() {
+    // Safety: acceso al registro hardware en contexto de interrupción.
+    // Las interrupciones globales están deshabilitadas implícitamente durante ISR.
+    let byte = unsafe {
+        (*avr_device::atmega2560::USART0::ptr()).udr0().read().bits()
+    };
+    unsafe { RX_BUF.push(byte); }
+}
+
 // ─── Macro auxiliar ──────────────────────────────────────────────────────────
 
 /// Aplica msm.drive al rover; en FAULT/STANDBY para todos los motores.
@@ -119,10 +146,28 @@ fn main() -> ! {
     let dp   = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
 
-    // ── USART0: USB — temporal para test desde PC ────────────────────────────
-    // En producción usar USART3 (D14/D15) para la RPi5.
+    // ── USART0: USB — modo test desde PC ─────────────────────────────────────
+    // En producción usar USART3 (D14/D15): ver comentario en bloque ISR arriba.
     let serial_rpi = arduino_hal::default_serial!(dp, pins, 115200);
     let mut iface = CommandInterface::new(serial_rpi);
+
+    // Habilitar interrupción USART0 RX Complete (RXCIE0 = bit 7 de UCSR0B).
+    // La ISR USART0_RX copiará cada byte al RX_BUF antes de que el FIFO
+    // hardware (3 bytes) se desborde durante delay_ms(20).
+    // En producción (USART3): modificar UCSR3B con bit RXCIE3.
+    //
+    // IMPORTANTE: vaciar el FIFO hardware antes de habilitar la ISR.
+    // El bootloader puede dejar bytes residuales en el FIFO que, de no
+    // descartarse, la ISR los leería al ejecutar SEI y los almacenaría
+    // en RX_BUF como basura, potencialmente formando comandos inválidos
+    // (p.ej. "FLT") que pondrían la MSM en FAULT en el arranque.
+    unsafe {
+        let p = &(*avr_device::atmega2560::USART0::ptr());
+        while p.ucsr0a().read().rxc0().bit_is_set() {
+            let _ = p.udr0().read().bits(); // descartar byte residual
+        }
+        p.ucsr0b().modify(|_, w| w.rxcie0().set_bit());
+    }
 
     // ── Timers PWM ───────────────────────────────────────────────────────────
     let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64);
@@ -222,8 +267,8 @@ fn main() -> ! {
             }
         }
 
-        // 4. Comando entrante desde RPi5
-        if iface.poll_command() {
+        // 4. Comando entrante desde RPi5 (interrupt-driven via RX_BUF)
+        if iface.poll_from_ring(&RX_BUF) {
             // Copiar a buffer local para liberar el borrow de iface
             let mut cmd_buf = [0u8; 32];
             let cmd_len = {
@@ -260,7 +305,8 @@ fn main() -> ! {
             iface.send_response(format_response(msm.telemetry(0), &mut resp_buf));
         }
 
-        // Sin delay: poll_command corre continuamente para no saturar FIFO USART (3 bytes)
-        // Producción: implementar USART RX interrupt con ring buffer
+        // delay_ms restaurado: la ISR USART0_RX garantiza que ningún byte
+        // se pierde durante el bloqueo. Ver docs/debug_usart_overflow.md.
+        arduino_hal::delay_ms(LOOP_MS);
     }
 }

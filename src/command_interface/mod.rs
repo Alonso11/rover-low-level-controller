@@ -1,6 +1,9 @@
-// Version: v1.0
+// Version: v1.1
 //! Interfaz de comandos por puerto Serie
 //! Gestiona la comunicación protocolizada con la Raspberry Pi 5.
+
+pub mod rx_buffer;
+pub use rx_buffer::RxRingBuffer;
 
 use arduino_hal::hal::usart::UsartOps;
 use arduino_hal::prelude::*;
@@ -66,5 +69,28 @@ where
         for &b in bytes {
             let _ = nb::block!(self.serial.write(b));
         }
+    }
+
+    /// Versión interrupt-driven de `poll_command`.
+    ///
+    /// Lee bytes del `RxRingBuffer` (llenado por la ISR USART_RX) en lugar
+    /// de leer directamente del FIFO hardware. Permite que el loop principal
+    /// use `delay_ms()` sin perder bytes: la ISR los almacena en el buffer
+    /// de 64 bytes mientras el CPU está ocupado.
+    ///
+    /// Retorna `true` cuando se recibe un comando completo (`\n` o `\r`).
+    /// El comando queda accesible via `get_command()`.
+    pub fn poll_from_ring(&mut self, rx: &RxRingBuffer) -> bool {
+        while let Some(byte) = rx.pop() {
+            if byte == b'\n' || byte == b'\r' {
+                if self.index > 0 {
+                    return true;
+                }
+            } else if self.index < BUFFER_SIZE - 1 {
+                self.buffer[self.index] = byte;
+                self.index += 1;
+            }
+        }
+        false
     }
 }
