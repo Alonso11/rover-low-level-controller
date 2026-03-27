@@ -10,10 +10,16 @@ pub mod encoder;
 pub mod hc_sr04;
 /// Módulo para el sensor LiDAR TF-Luna
 pub mod tf_luna;
+/// Módulo para el sensor de corriente ACS712-30A
+pub mod acs712;
+/// Módulo para el sensor de temperatura LM335
+pub mod lm335;
 
 pub use encoder::{Encoder, HallEncoder};
 pub use hc_sr04::HCSR04;
 pub use tf_luna::TFLuna;
+pub use acs712::ACS712;
+pub use lm335::LM335;
 
 /// Interfaz común para sensores de proximidad/distancia.
 pub trait ProximitySensor {

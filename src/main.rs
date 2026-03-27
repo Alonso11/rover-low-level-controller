@@ -39,6 +39,7 @@ use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuff
 use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
+use rover_low_level_controller::sensors::{ACS712, LM335};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
@@ -71,6 +72,11 @@ const SEN_READ_PERIOD: u8 = 25;
 /// Corriente máxima por motor en mA antes de declarar FAULT.
 /// L298N soporta 2 A continuos; 2500 mA da margen ante picos breves.
 const OVERCURRENT_MA: i32 = 2500;
+
+/// Número de muestras ADC a promediar por canal.
+/// El ATmega2560 tiene un solo ADC multiplexado: cada muestra toma ~104 µs.
+/// 8 muestras × 7 canales = ~5.8 ms bloqueantes cada SEN_READ_PERIOD ciclos.
+const SEN_SAMPLES: u8 = 8;
 
 // ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
 //
@@ -137,6 +143,18 @@ fn USART0_RX() {
 }
 
 // ─── Macro auxiliar ──────────────────────────────────────────────────────────
+
+/// Promedia N lecturas de un pin analógico para reducir ruido ADC.
+/// El ATmega2560 tiene un solo ADC multiplexado; cada lectura es ~104 µs.
+macro_rules! adc_avg {
+    ($pin:expr, $adc:expr, $n:expr) => {{
+        let mut sum = 0u32;
+        for _ in 0..$n {
+            sum += $pin.analog_read(&mut $adc) as u32;
+        }
+        (sum / $n as u32) as u16
+    }};
+}
 
 /// Aplica msm.drive al rover; en FAULT/STANDBY para todos los motores.
 macro_rules! sync_drive {
@@ -222,14 +240,17 @@ fn main() -> ! {
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
     // ACS712-30A (corriente): A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
     // LM335 (temperatura):    A6
-    let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
-    let acs_fr = pins.a0.into_analog_input(&mut adc);
-    let acs_fl = pins.a1.into_analog_input(&mut adc);
-    let acs_cr = pins.a2.into_analog_input(&mut adc);
-    let acs_cl = pins.a3.into_analog_input(&mut adc);
-    let acs_rr = pins.a4.into_analog_input(&mut adc);
-    let acs_rl = pins.a5.into_analog_input(&mut adc);
-    let lm335  = pins.a6.into_analog_input(&mut adc);
+    let mut adc    = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let acs_fr_pin = pins.a0.into_analog_input(&mut adc);
+    let acs_fl_pin = pins.a1.into_analog_input(&mut adc);
+    let acs_cr_pin = pins.a2.into_analog_input(&mut adc);
+    let acs_cl_pin = pins.a3.into_analog_input(&mut adc);
+    let acs_rr_pin = pins.a4.into_analog_input(&mut adc);
+    let acs_rl_pin = pins.a5.into_analog_input(&mut adc);
+    let lm335_pin  = pins.a6.into_analog_input(&mut adc);
+
+    let acs712 = ACS712::new();   // offset 2500 mV — ajustar con with_zero_mv si es necesario
+    let lm335  = LM335::new();    // offset 0 K — ajustar con with_offset si es necesario
 
     // ── Interrupciones externas INT0–INT5 (rising edge) ──────────────────────
     // EICRA: controla INT0–INT3 (ISCn1=1, ISCn0=1 → rising edge)
@@ -348,24 +369,24 @@ fn main() -> ! {
         if sen_counter >= SEN_READ_PERIOD {
             sen_counter = 0;
 
-            // Leer los 6 canales de corriente de una vez
+            // Leer los 6 canales de corriente — promedio de SEN_SAMPLES lecturas
+            // cada canal toma ~104 µs × 8 = ~832 µs; 6 canales = ~5 ms total.
             let raw_i = [
-                acs_fr.analog_read(&mut adc),
-                acs_fl.analog_read(&mut adc),
-                acs_cr.analog_read(&mut adc),
-                acs_cl.analog_read(&mut adc),
-                acs_rr.analog_read(&mut adc),
-                acs_rl.analog_read(&mut adc),
+                adc_avg!(acs_fr_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_fl_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_cr_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_cl_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_rr_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_rl_pin, adc, SEN_SAMPLES),
             ];
 
             let mut overcurrent_mask: u8 = 0;
             let mut num_buf = [0u8; 8];
 
             for i in 0..6usize {
-                let v_mv = (raw_i[i] as u32 * 5000) / 1023;
-                let current_ma = (v_mv as i32 - 2500) * 1000 / 66;
+                let current_ma = acs712.read_ma(raw_i[i]);
 
-                if current_ma.abs() > OVERCURRENT_MA {
+                if acs712.is_overcurrent(current_ma, OVERCURRENT_MA) {
                     overcurrent_mask |= 1 << i;
                 }
 
@@ -378,10 +399,9 @@ fn main() -> ! {
                 iface.send_response(b"mA\n");
             }
 
-            // Temperatura LM335: 10 mV/K, V_zero = 0 K → T(C) = V_mv/10 - 273
-            let raw_t  = lm335.analog_read(&mut adc);
-            let v_mv_t = (raw_t as u32 * 5000) / 1023;
-            let t_c    = (v_mv_t / 10) as i32 - 273;
+            // Temperatura con driver LM335 — promedio de SEN_SAMPLES lecturas
+            let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
+            let t_c   = lm335.read_celsius(raw_t);
 
             // SEN:T:<celsius>C\n
             iface.send_response(b"SEN:T:");

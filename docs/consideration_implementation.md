@@ -273,16 +273,21 @@ navigation model without giving up local safety authority.
 | HC-SR04 | Arduino | Emergency hard stop | ~20 ms |
 | Encoders | Arduino | Stall → FAULT | ~20 ms |
 
-### Current Implementation Status (v2.0)
+### Current Implementation Status (v2.4)
 
-As of `feature/msm-main-integration`, the MSM loop is functional but sensors
-are not yet wired into the safety layers:
+As of `feature/msm-main-integration` (v2.4), all local safety layers are active:
 
-- `update_safety(0)` is hardcoded — stall detection disabled
-- HC-SR04 and TF-Luna are not read in `main.rs`
-- TLM frame does not include distance readings
+- **Layer 1 — HC-SR04**: active, reads every 5 cycles (~100 ms), FAULT if < 20 cm.
+- **Layer 2 — TF-Luna**: discarded for the TFG scope; USART2 (D16/D17) remains
+  free for future integration.
+- **Layer 3 — RPi5**: active via USART0 (USB) at 115200, full MSM protocol.
+- **Stall detection**: active, 6 encoders via INT0–INT5, FAULT if |speed|>20%
+  and encoder frozen for >50 cycles (~1 s).
+- **Overcurrent detection**: active, 6× ACS712-30A on A0–A5, FAULT if any
+  motor exceeds 2500 mA.
 
-Integration of layers 1 and 2 is the next planned milestone.
+The TLM frame still does not include distance or current readings inline.
+Sensor data is reported as separate `SEN:` frames every ~500 ms.
 
 ---
 
@@ -422,6 +427,82 @@ If fewer encoders are physically installed, remove or comment the
 corresponding `static`, ISR, and speed entry. The `stall_mask` bit for
 that motor will never be set (counter stays at 0, speed check fails).
 No other code needs to change.
+
+---
+
+## 8. ADC Multiplexado y Promediado — ACS712 + LM335
+
+### Hardware ADC del ATmega2560
+
+El ATmega2560 dispone de **un único ADC SAR de 10 bits** con un multiplexor
+analógico de 16 canales (A0–A15, registros ADMUX/ADCSRA). Solo puede realizar
+**una conversión a la vez**; los 16 canales se leen secuencialmente.
+
+Cada conversión toma **13 ciclos del reloj ADC**. Con el prescaler por defecto
+de `arduino_hal` (128 → 125 kHz de reloj ADC):
+
+```
+T_conversion = 13 / 125_000 Hz ≈ 104 µs por canal
+```
+
+### Canales usados
+
+| Canal | Pin  | Sensor        | Función                |
+|-------|------|---------------|------------------------|
+| ADC0  | A0   | ACS712 FR     | Corriente motor Front Right  |
+| ADC1  | A1   | ACS712 FL     | Corriente motor Front Left   |
+| ADC2  | A2   | ACS712 CR     | Corriente motor Center Right |
+| ADC3  | A3   | ACS712 CL     | Corriente motor Center Left  |
+| ADC4  | A4   | ACS712 RR     | Corriente motor Rear Right   |
+| ADC5  | A5   | ACS712 RL     | Corriente motor Rear Left    |
+| ADC6  | A6   | LM335         | Temperatura ambiente         |
+
+### Por qué se promedia (macro `adc_avg!`)
+
+Una sola lectura ADC tiene ruido de ±2–3 LSB (~±10–15 mV). Para el ACS712
+(66 mV/A) esto equivale a **±150–225 mA** de ruido por muestra — suficiente
+para causar falsos positivos en la detección de sobrecorriente.
+
+Con promedio de N muestras, el ruido se reduce por √N:
+
+```
+N=1:  σ ≈ ±225 mA
+N=8:  σ ≈ ±225 / √8 ≈ ±80 mA   ← implementado (SEN_SAMPLES = 8)
+N=16: σ ≈ ±225 / √16 ≈ ±56 mA
+```
+
+Para el LM335 (10 mV/K), N=8 da σ ≈ **±0.5 °C** frente a ±1.5 °C sin promediado.
+
+### Implementación
+
+La macro `adc_avg!` en `main.rs` centraliza el patrón:
+
+```rust
+macro_rules! adc_avg {
+    ($pin:expr, $adc:expr, $n:expr) => {{
+        let mut sum = 0u32;
+        for _ in 0..$n { sum += $pin.analog_read(&mut $adc) as u32; }
+        (sum / $n as u32) as u16
+    }};
+}
+```
+
+Tiempo total bloqueante por lectura de todos los sensores:
+
+```
+7 canales × 8 muestras × 104 µs = ~5.8 ms
+Frecuencia de lectura: cada 25 ciclos × 20 ms = 500 ms
+Overhead: 5.8 ms / 500 ms = 1.2 % del tiempo de CPU
+```
+
+### Diseño HAL-independiente de los drivers
+
+Los drivers `ACS712` y `LM335` reciben el valor ADC crudo (`u16`) en lugar
+de tomar `&mut Adc` directamente. Esto:
+
+1. Permite testearlos en x86 sin HAL (igual que la MSM).
+2. Desacopla la conversión matemática del hardware de adquisición.
+3. Mantiene el código de manejo del ADC en un solo lugar (`main.rs`).
 
 ---
 
