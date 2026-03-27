@@ -13,6 +13,7 @@
 # Suites disponibles:
 #   state_machine_test  — Máquina de estados maestra (MSM), parser, telemetría
 #   sensors_test        — Drivers analógicos ACS712-30A y LM335
+#   motor_logic_test    — Lógica de motor (speed mapping, signos)
 #
 # Uso: ./test_native.sh [-- <cargo test args>]
 
@@ -63,6 +64,7 @@ run_suite() {
 
 run_suite state_machine_test
 run_suite sensors_test
+run_suite motor_logic_test
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then
