@@ -93,7 +93,12 @@ Detección de obstáculos y navegación autónoma.
 
 | Sensor | Pin Arduino | Registro | Función | Notas |
 | :--- | :--- | :--- | :--- | :--- |
-| **ACS712-30A (OUT)** | **A0** | PF0 | ADC canal 0 | Corriente ±30A, 66 mV/A, V_zero=2.5V |
-| **LM335 (OUT)**      | **A1** | PF1 | ADC canal 1 | Temperatura, 10 mV/K, R_bias 2kΩ a 5V |
+| **ACS712 FR (OUT)**  | **A0** | PF0 | ADC canal 0 | Corriente motor Front Right  |
+| **ACS712 FL (OUT)**  | **A1** | PF1 | ADC canal 1 | Corriente motor Front Left   |
+| **ACS712 CR (OUT)**  | **A2** | PF2 | ADC canal 2 | Corriente motor Center Right |
+| **ACS712 CL (OUT)**  | **A3** | PF3 | ADC canal 3 | Corriente motor Center Left  |
+| **ACS712 RR (OUT)**  | **A4** | PF4 | ADC canal 4 | Corriente motor Rear Right   |
+| **ACS712 RL (OUT)**  | **A5** | PF5 | ADC canal 5 | Corriente motor Rear Left    |
+| **LM335 (OUT)**      | **A6** | PF6 | ADC canal 6 | Temperatura, 10 mV/K, R_bias 2kΩ a 5V |
 | **VCC** | **5V** | - | Power | Ambos sensores alimentados a 5V |
 | **GND** | **GND** | GND | Ground | Tierra común |

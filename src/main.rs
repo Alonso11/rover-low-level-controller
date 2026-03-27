@@ -1,24 +1,26 @@
-// Version: v2.3
+// Version: v2.4
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
 //!   1. `msm.tick()`            — watchdog: sin PING en 100 ciclos (~2 s) → FAULT
 //!   2. HC-SR04 (cada 5 ciclos) — emergencia < 20 cm → FAULT
 //!   3. Stall detection         — encoders via ISR → msm.update_safety(mask)
-//!   4. `iface.poll_command()`  — trama ASCII desde USART3 (RPi5)
+//!   4. `iface.poll_command()`  — trama ASCII desde USART0 (USB/RPi5)
 //!   5. `msm.process(cmd)`      — transición de estado + calcula DriveOutput
 //!   6. `sync_drive!()`         — aplica DriveOutput a los 6 motores
-//!   7. `iface.send_response()` — respuesta ASCII a RPi5
-//!   8. Telemetría (~1 s)       — TLM:<SAFETY>:<MASK>
+//!   7. `iface.send_response()` — respuesta ASCII
+//!   8. Sensores analógicos (cada 25 ciclos ~500 ms) — corriente + temperatura
+//!   9. Telemetría (~1 s)       — TLM:<SAFETY>:<MASK>
 //!
 //! ## Asignación de pines:
-//!   - USART3 D14(TX3)/D15(RX3) → RPi5 @ 115200
-//!     NOTA: Se usa USART3 (no USART1) para liberar D18/D19 para encoders.
+//!   - USART0 (USB) @ 115200 → RPi5 / PC
 //!   - Timer2 D9(FR) D10(FL) | Timer3 D5(CR) | Timer4 D6(CL) D7(RR) D8(RL)
 //!   - Dirección motores: D22–D37
 //!   - HC-SR04: D38(Trigger) D39(Echo)
 //!   - Encoders: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
 //!               D2(INT4/RR) D3(INT5/RL)
+//!   - ACS712-30A: A0(FR) A1(FL) A2(CR) A3(CL) A4(RR) A5(RL)
+//!   - LM335:      A6
 //!
 //! ## Diseño de encoders:
 //!   Los 6 HallEncoders son `static` para ser accesibles desde las ISRs.
@@ -62,6 +64,13 @@ const STALL_THRESHOLD: u16 = 50;
 /// Velocidad mínima absoluta (%) para activar la detección de stall.
 /// Por debajo de este valor se asume que el motor está intencionalmente parado.
 const STALL_SPEED_MIN: i16 = 20;
+
+/// Cada cuántos ciclos leer los sensores analógicos (~500 ms).
+const SEN_READ_PERIOD: u8 = 25;
+
+/// Corriente máxima por motor en mA antes de declarar FAULT.
+/// L298N soporta 2 A continuos; 2500 mA da margen ante picos breves.
+const OVERCURRENT_MA: i32 = 2500;
 
 // ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
 //
@@ -139,6 +148,27 @@ macro_rules! sync_drive {
     };
 }
 
+// ─── Utilidades ──────────────────────────────────────────────────────────────
+
+/// Convierte un i32 a dígitos ASCII en `buf`. Retorna el slice válido.
+/// `buf` debe tener al menos 8 bytes.
+fn fmt_i32(val: i32, buf: &mut [u8; 8]) -> &[u8] {
+    if val == 0 {
+        buf[0] = b'0';
+        return &buf[..1];
+    }
+    let neg = val < 0;
+    let mut v = if neg { (-(val as i64)) as u32 } else { val as u32 };
+    let mut i = 8usize;
+    while v > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    if neg { i -= 1; buf[i] = b'-'; }
+    &buf[i..]
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[arduino_hal::entry]
@@ -189,6 +219,18 @@ fn main() -> ! {
         pins.d39.into_floating_input().forget_imode(),
     );
 
+    // ── ADC + sensores analógicos ─────────────────────────────────────────────
+    // ACS712-30A (corriente): A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
+    // LM335 (temperatura):    A6
+    let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let acs_fr = pins.a0.into_analog_input(&mut adc);
+    let acs_fl = pins.a1.into_analog_input(&mut adc);
+    let acs_cr = pins.a2.into_analog_input(&mut adc);
+    let acs_cl = pins.a3.into_analog_input(&mut adc);
+    let acs_rr = pins.a4.into_analog_input(&mut adc);
+    let acs_rl = pins.a5.into_analog_input(&mut adc);
+    let lm335  = pins.a6.into_analog_input(&mut adc);
+
     // ── Interrupciones externas INT0–INT5 (rising edge) ──────────────────────
     // EICRA: controla INT0–INT3 (ISCn1=1, ISCn0=1 → rising edge)
     // EICRB: controla INT4–INT5 (ISCn1=1, ISCn0=1 → rising edge)
@@ -203,12 +245,13 @@ fn main() -> ! {
     let mut resp_buf     = [0u8; RESP_BUF];
     let mut tlm_counter: u8  = 0;
     let mut hc_counter:  u8  = 0;
+    let mut sen_counter: u8  = 0;
 
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
 
-    iface.log("=== ROVER OLYMPUS v2.2 — MSM + HC-SR04 + ENCODERS ===");
+    iface.log("=== ROVER OLYMPUS v2.4 — MSM + HC-SR04 + ENCODERS + ACS712 + LM335 ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -297,7 +340,63 @@ fn main() -> ! {
             iface.send_response(format_response(response, &mut resp_buf));
         }
 
-        // 5. Telemetría periódica (~1 s) — stall_mask siempre 0 aquí porque
+        // 5. Sensores analógicos — corriente (ACS712) y temperatura (LM335)
+        //    Lectura cada SEN_READ_PERIOD ciclos (~500 ms).
+        //    Sobrecorriente en cualquier motor → FAULT inmediato.
+        //    Frame de salida: SEN:I<n>:<mA>mA  y  SEN:T:<celsius>C
+        sen_counter = sen_counter.wrapping_add(1);
+        if sen_counter >= SEN_READ_PERIOD {
+            sen_counter = 0;
+
+            // Leer los 6 canales de corriente de una vez
+            let raw_i = [
+                acs_fr.analog_read(&mut adc),
+                acs_fl.analog_read(&mut adc),
+                acs_cr.analog_read(&mut adc),
+                acs_cl.analog_read(&mut adc),
+                acs_rr.analog_read(&mut adc),
+                acs_rl.analog_read(&mut adc),
+            ];
+
+            let mut overcurrent_mask: u8 = 0;
+            let mut num_buf = [0u8; 8];
+
+            for i in 0..6usize {
+                let v_mv = (raw_i[i] as u32 * 5000) / 1023;
+                let current_ma = (v_mv as i32 - 2500) * 1000 / 66;
+
+                if current_ma.abs() > OVERCURRENT_MA {
+                    overcurrent_mask |= 1 << i;
+                }
+
+                // SEN:I<n>:<mA>mA\n
+                iface.send_response(b"SEN:I");
+                num_buf[0] = b'0' + i as u8;
+                iface.send_response(&num_buf[..1]);
+                iface.send_response(b":");
+                iface.send_response(fmt_i32(current_ma, &mut num_buf));
+                iface.send_response(b"mA\n");
+            }
+
+            // Temperatura LM335: 10 mV/K, V_zero = 0 K → T(C) = V_mv/10 - 273
+            let raw_t  = lm335.analog_read(&mut adc);
+            let v_mv_t = (raw_t as u32 * 5000) / 1023;
+            let t_c    = (v_mv_t / 10) as i32 - 273;
+
+            // SEN:T:<celsius>C\n
+            iface.send_response(b"SEN:T:");
+            iface.send_response(fmt_i32(t_c, &mut num_buf));
+            iface.send_response(b"C\n");
+
+            // Sobrecorriente → FAULT
+            if overcurrent_mask != 0 {
+                msm.update_safety(overcurrent_mask);
+                sync_drive!(rover, msm);
+                iface.send_response(format_response(msm.telemetry(overcurrent_mask), &mut resp_buf));
+            }
+        }
+
+        // 6. Telemetría periódica (~1 s) — stall_mask siempre 0 aquí porque
         //    si hubiera stall ya se reportó en el bloque de encoders arriba.
         tlm_counter = tlm_counter.wrapping_add(1);
         if tlm_counter >= TLM_PERIOD {
