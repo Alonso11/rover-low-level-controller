@@ -218,18 +218,18 @@ fn main() -> ! {
             iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
 
-        // 2. HC-SR04 — deshabilitado para test sin hardware
-        // hc_counter = hc_counter.wrapping_add(1);
-        // if hc_counter >= HC_READ_PERIOD {
-        //     hc_counter = 0;
-        //     if let Some(mm) = hcsr04.measure_mm() {
-        //         if mm < HC_EMERGENCY_MM {
-        //             let resp = msm.process(Command::Fault);
-        //             sync_drive!(rover, msm);
-        //             iface.send_response(format_response(resp, &mut resp_buf));
-        //         }
-        //     }
-        // }
+        // 2. HC-SR04 — D38(Trigger) D39(Echo), lectura cada HC_READ_PERIOD ciclos (~100 ms)
+        hc_counter = hc_counter.wrapping_add(1);
+        if hc_counter >= HC_READ_PERIOD {
+            hc_counter = 0;
+            if let Some(mm) = hcsr04.measure_mm() {
+                if mm < HC_EMERGENCY_MM {
+                    let resp = msm.process(Command::Fault);
+                    sync_drive!(rover, msm);
+                    iface.send_response(format_response(resp, &mut resp_buf));
+                }
+            }
+        }
 
         // 3. Stall detection via encoders
         // Lee los 6 contadores y compara con el ciclo anterior.
