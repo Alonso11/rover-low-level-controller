@@ -12,9 +12,12 @@ pub mod motor_control;
 #[cfg(feature = "avr")]
 pub mod command_interface;
 #[cfg(feature = "avr")]
-pub mod sensors;
-#[cfg(feature = "avr")]
 pub mod controller;
+
+// Módulo de sensores: los drivers analógicos (ACS712, LM335) son puro Rust y
+// siempre disponibles. Los drivers con HAL (HC-SR04, encoders, TF-Luna) solo
+// compilan con feature "avr".
+pub mod sensors;
 
 // Módulo de lógica pura (sin HAL) — siempre disponible, testeable en x86.
 pub mod state_machine;

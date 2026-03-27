@@ -42,14 +42,21 @@ impl ACS712 {
     /// Retorna valores negativos si la corriente fluye en sentido contrario.
     ///
     /// # Fórmula
+    /// Se calcula el punto de cruce por cero en unidades ADC (redondeado al
+    /// entero más cercano) para evitar error de truncación al pasar dos veces
+    /// por división entera (ADC→mV→mA):
     /// ```
-    /// V_mv       = (adc * 5000) / 1023
-    /// delta_mv   = V_mv − zero_mv
-    /// I_mA       = (delta_mv × 1000) / 66
+    /// zero_adc   = round(zero_mv × 1023 / 5000)
+    /// delta_adc  = adc − zero_adc
+    /// I_mA       = delta_adc × 5 000 000 / (1023 × 66)
     /// ```
     pub fn read_ma(&self, adc_raw: u16) -> i32 {
-        let v_mv = (adc_raw as u32 * 5000) / 1023;
-        (v_mv as i32 - self.zero_mv) * 1000 / SENSITIVITY_MV_PER_A
+        // Redondeo al entero más cercano: +2500 antes de dividir por 5000.
+        let zero_adc = (self.zero_mv as u32 * 1023 + 2500) / 5000;
+        let delta_adc = adc_raw as i32 - zero_adc as i32;
+        // Usa i64 para evitar desbordamiento (max: 512 × 5_000_000 > i32::MAX).
+        ((delta_adc as i64 * 5_000_000_i64)
+            / (1023_i64 * SENSITIVITY_MV_PER_A as i64)) as i32
     }
 
     /// Retorna `true` si el valor absoluto de corriente supera `threshold_ma`.

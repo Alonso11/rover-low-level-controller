@@ -4,11 +4,15 @@
 # Estrategia:
 #   --no-default-features  → desactiva el feature "avr", omitiendo todos los
 #                            módulos que dependen de arduino-hal.
-#   --test state_machine_test → solo compila/corre ese integration test.
+#   --test <suite>         → corre un integration test específico.
 #   build-std deshabilitado → evita el conflicto de core duplicado.
-#   RUSTFLAGS -C panic=unwind → overrride de panic=abort del perfil dev,
+#   RUSTFLAGS -C panic=unwind → override de panic=abort del perfil dev,
 #                               necesario porque la core precompilada x86
 #                               usa panic=unwind.
+#
+# Suites disponibles:
+#   state_machine_test  — Máquina de estados maestra (MSM), parser, telemetría
+#   sensors_test        — Drivers analógicos ACS712-30A y LM335
 #
 # Uso: ./test_native.sh [-- <cargo test args>]
 
@@ -37,10 +41,33 @@ target = "avr-atmega2560.json"
 runner = "ravedude"
 EOF
 
-echo "[test_native] Corriendo tests nativos x86..."
-RUSTFLAGS="-C panic=unwind" \
-    cargo test \
-        --no-default-features \
-        --test state_machine_test \
-        --target x86_64-unknown-linux-gnu \
-        "$@"
+EXTRA_ARGS=("$@")   # args extra del script (e.g. -- --nocapture)
+PASS=0
+FAIL=0
+
+run_suite() {
+    local suite="$1"
+    echo ""
+    echo "[test_native] ── $suite ────────────────────────"
+    if RUSTFLAGS="-C panic=unwind" \
+        cargo +nightly test \
+            --no-default-features \
+            --test "$suite" \
+            --target x86_64-unknown-linux-gnu \
+            "${EXTRA_ARGS[@]}"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+run_suite state_machine_test
+run_suite sensors_test
+
+echo ""
+if [ "$FAIL" -eq 0 ]; then
+    echo "[test_native] OK Todas las suites pasaron ($PASS/$((PASS+FAIL)))"
+else
+    echo "[test_native] FALLO $FAIL suite(s) fallaron de $((PASS+FAIL))"
+    exit 1
+fi

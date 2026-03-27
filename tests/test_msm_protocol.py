@@ -2,9 +2,18 @@
 """
 test_msm_protocol.py — Verificación del protocolo MSM desde PC via USB
 =======================================================================
+Version: v2.0
+
+Cambios v2.0:
+  - Soporte para el formato TLM extendido con sensores:
+      TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C
+    donde I0-I5 son corrientes en mA (ACS712-30A, A0-A5) y T es
+    temperatura en °C (LM335, A6).
+  - Añadido helper read_tlm() y test de formato TLM (#13).
+
 Requisitos:
   - Arduino Mega 2560 conectado via USB (/dev/ttyUSB0 por defecto)
-  - Firmware feature/msm-main-integration flasheado en modo USB (USART0)
+  - Firmware flasheado (rama actual, no feature/msm-main-integration)
   - pip install pyserial
 
 Uso:
@@ -16,6 +25,7 @@ Contexto:
   el análisis de los problemas encontrados durante la depuración.
 """
 
+import re
 import serial
 import time
 import sys
@@ -26,6 +36,14 @@ PORT     = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyUSB0"
 BAUD     = 115200
 TIMEOUT  = 3.0   # segundos
 BOOT_WAIT = 2.0  # espera tras reset por DTR
+
+# Formato TLM:  TLM:<SAFETY>:<STALL6>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C
+# Ejemplo:      TLM:NORMAL:000000:0:0:0:0:0:0:24C
+TLM_PATTERN = re.compile(
+    r"^TLM:(NORMAL|WARN|FAULT):[01]{6}:"   # safety + stall mask
+    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):"  # corrientes I0-I5
+    r"(-?\d+)C$"                            # temperatura
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,6 +59,14 @@ def send(s: serial.Serial, cmd: bytes) -> str:
     for _ in range(32):  # máximo 32 líneas antes de rendirse
         line = s.readline().decode(errors="ignore").strip()
         if any(line.startswith(p) for p in RESPONSE_PREFIXES):
+            return line
+    return ""
+
+def read_tlm(s: serial.Serial, max_lines: int = 64) -> str:
+    """Espera y retorna la primera línea TLM recibida, o '' si hay timeout."""
+    for _ in range(max_lines):
+        line = s.readline().decode(errors="ignore").strip()
+        if line.startswith("TLM:"):
             return line
     return ""
 
@@ -132,6 +158,37 @@ def main():
     total += 1
     resp = send(s, b"FOOBAR\n")
     if check("FOOBAR → ERR:UNKNOWN", resp, "ERR:UNKNOWN"): passed += 1
+
+    # 13. Formato TLM extendido con sensores
+    #     Tras STB, el loop envía TLM periódicamente.
+    #     Verificamos que el frame tenga el formato correcto:
+    #       TLM:<SAFETY>:<STALL6>:<I0>:...:<I5>:<T>C
+    print("\n--- Test TLM extendido ---")
+    total += 1
+    send(s, b"RST\n")   # aseguramos STANDBY
+    time.sleep(0.1)
+    s.reset_input_buffer()
+    send(s, b"PING\n")  # dispara ciclo del loop que emite TLM periódico
+    tlm = read_tlm(s, max_lines=128)
+    if tlm:
+        m = TLM_PATTERN.match(tlm)
+        if m:
+            print(f"  [PASS] {'TLM formato OK':20s}  got={tlm!r}")
+            currents = [int(m.group(i)) for i in range(3, 9)]
+            temp     = int(m.group(9))
+            # Rangos físicos razonables (sin hardware puede dar 0)
+            current_ok = all(-30000 <= c <= 30000 for c in currents)
+            temp_ok    = -40 <= temp <= 125
+            if not current_ok:
+                print(f"  [WARN] Corrientes fuera de rango: {currents}")
+            if not temp_ok:
+                print(f"  [WARN] Temperatura fuera de rango: {temp} C")
+            passed += 1
+        else:
+            print(f"  [FAIL] {'TLM formato':20s}  got={tlm!r}")
+            print(f"         Esperado: TLM:<SAFETY>:<STALL6>:<I0>:...:<I5>:<T>C")
+    else:
+        print(f"  [FAIL] {'TLM no recibido':20s}  (timeout esperando TLM:)")
 
     s.close()
 
