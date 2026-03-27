@@ -506,6 +506,71 @@ de tomar `&mut Adc` directamente. Esto:
 
 ---
 
+## 9. Telemetría — Diseño del Frame TLM
+
+### Contexto
+
+El rover genera tres tipos de datos de estado que la RPi5 necesita recibir:
+
+| Dato | Fuente | Frecuencia original |
+|------|--------|---------------------|
+| Safety + stall mask | MSM | Cada ~1 s (TLM) |
+| Corriente 6 motores | ACS712 A0–A5 | Cada ~500 ms (SEN:Ix) |
+| Temperatura | LM335 A6 | Cada ~500 ms (SEN:T) |
+
+### Opciones evaluadas
+
+**Opción A — TLM extendido (elegida)**
+```
+TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C\n
+Ejemplo: TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C\n
+```
+- Un solo frame periódico, fácil de parsear en RPi5
+- Requiere ampliar `RESP_BUF` 24 → 80 bytes
+- Requiere añadir `SensorFrame` a `Response::Telemetry` en la MSM
+
+**Opción B — SEN compacto separado**
+```
+TLM:NORMAL:000000\n
+SEN:1200:980:1100:1050:1200:1180:27\n
+```
+- Mínimo cambio: solo compactar los 7 valores SEN en un frame
+- Dos flujos — RPi5 debe correlacionarlos por tiempo
+
+**Opción C — Frame extendido en main.rs sin modificar la MSM**
+- Construir el frame directamente en `main.rs` ignorando `format_response`
+- Más flexible pero rompe la separación de responsabilidades
+
+### Por qué Opción A
+
+La RPi5 recibe un único frame con todo el estado del LLC. No necesita
+correlacionar múltiples streams. El parser en `rover_bridge` solo implementa
+un tipo de frame de telemetría.
+
+La `SensorFrame` se mantiene en el módulo `state_machine` para seguir el mismo
+patrón de los tests nativos x86 ya existentes.
+
+### Estructura `SensorFrame`
+
+```rust
+pub struct SensorFrame {
+    pub currents: [i32; 6],  // mA por motor [FR, FL, CR, CL, RR, RL]
+    pub temp_c: i32,          // temperatura en °C
+}
+```
+
+### Formato final
+
+```
+TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C\n
+    ^────^ ^────^ ^──────────────────────────^ ^─^
+    safety stall  corrientes (mA) por motor    temp
+```
+
+Longitud máxima estimada: 66 bytes → `RESP_BUF = 80`.
+
+---
+
 ## 7. `no_std` and the Native Test Limitation
 
 `cargo test --target x86_64-unknown-linux-gnu` fails because `.cargo/config.toml`

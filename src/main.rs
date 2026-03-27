@@ -42,14 +42,14 @@ use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
-    format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
+    format_response, parse_command, Command, MasterStateMachine, Response, RoverState, SensorFrame,
 };
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
 const TLM_PERIOD: u8    = 50;  // ciclos entre telemetría (~1 s a 20 ms/ciclo)
 const LOOP_MS: u32      = 20;
-const RESP_BUF: usize   = 24;
+const RESP_BUF: usize   = 80; // TLM extendido: TLM:NORMAL:000000:±30000×6:±273C\n ≈ 66 bytes
 
 /// Cada cuántos ciclos leer el HC-SR04 (~100 ms).
 /// El driver es bloqueante; ver consideration_implementation.md §5.
@@ -166,27 +166,6 @@ macro_rules! sync_drive {
     };
 }
 
-// ─── Utilidades ──────────────────────────────────────────────────────────────
-
-/// Convierte un i32 a dígitos ASCII en `buf`. Retorna el slice válido.
-/// `buf` debe tener al menos 8 bytes.
-fn fmt_i32(val: i32, buf: &mut [u8; 8]) -> &[u8] {
-    if val == 0 {
-        buf[0] = b'0';
-        return &buf[..1];
-    }
-    let neg = val < 0;
-    let mut v = if neg { (-(val as i64)) as u32 } else { val as u32 };
-    let mut i = 8usize;
-    while v > 0 {
-        i -= 1;
-        buf[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-    }
-    if neg { i -= 1; buf[i] = b'-'; }
-    &buf[i..]
-}
-
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[arduino_hal::entry]
@@ -267,6 +246,7 @@ fn main() -> ! {
     let mut tlm_counter: u8  = 0;
     let mut hc_counter:  u8  = 0;
     let mut sen_counter: u8  = 0;
+    let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
 
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
     let mut last_counts  = [0i32; 6];
@@ -327,7 +307,7 @@ fn main() -> ! {
             if stall_mask != 0 {
                 msm.update_safety(stall_mask);
                 sync_drive!(rover, msm);
-                iface.send_response(format_response(msm.telemetry(stall_mask), &mut resp_buf));
+                iface.send_response(format_response(msm.telemetry(stall_mask, sensor_frame), &mut resp_buf));
             }
         }
 
@@ -362,15 +342,14 @@ fn main() -> ! {
         }
 
         // 5. Sensores analógicos — corriente (ACS712) y temperatura (LM335)
-        //    Lectura cada SEN_READ_PERIOD ciclos (~500 ms).
+        //    Lectura cada SEN_READ_PERIOD ciclos (~500 ms), promedio SEN_SAMPLES muestras.
+        //    Actualiza sensor_frame que se incluirá en el siguiente frame TLM.
         //    Sobrecorriente en cualquier motor → FAULT inmediato.
-        //    Frame de salida: SEN:I<n>:<mA>mA  y  SEN:T:<celsius>C
         sen_counter = sen_counter.wrapping_add(1);
         if sen_counter >= SEN_READ_PERIOD {
             sen_counter = 0;
 
-            // Leer los 6 canales de corriente — promedio de SEN_SAMPLES lecturas
-            // cada canal toma ~104 µs × 8 = ~832 µs; 6 canales = ~5 ms total.
+            // Leer 6 canales ACS712 — promedio de SEN_SAMPLES muestras cada uno
             let raw_i = [
                 adc_avg!(acs_fr_pin, adc, SEN_SAMPLES),
                 adc_avg!(acs_fl_pin, adc, SEN_SAMPLES),
@@ -381,38 +360,24 @@ fn main() -> ! {
             ];
 
             let mut overcurrent_mask: u8 = 0;
-            let mut num_buf = [0u8; 8];
-
             for i in 0..6usize {
                 let current_ma = acs712.read_ma(raw_i[i]);
-
+                sensor_frame.currents[i] = current_ma;
                 if acs712.is_overcurrent(current_ma, OVERCURRENT_MA) {
                     overcurrent_mask |= 1 << i;
                 }
-
-                // SEN:I<n>:<mA>mA\n
-                iface.send_response(b"SEN:I");
-                num_buf[0] = b'0' + i as u8;
-                iface.send_response(&num_buf[..1]);
-                iface.send_response(b":");
-                iface.send_response(fmt_i32(current_ma, &mut num_buf));
-                iface.send_response(b"mA\n");
             }
 
-            // Temperatura con driver LM335 — promedio de SEN_SAMPLES lecturas
+            // Leer temperatura LM335
             let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
-            let t_c   = lm335.read_celsius(raw_t);
+            sensor_frame.temp_c = lm335.read_celsius(raw_t);
 
-            // SEN:T:<celsius>C\n
-            iface.send_response(b"SEN:T:");
-            iface.send_response(fmt_i32(t_c, &mut num_buf));
-            iface.send_response(b"C\n");
-
-            // Sobrecorriente → FAULT
+            // Sobrecorriente → FAULT + TLM inmediato con datos actuales
             if overcurrent_mask != 0 {
                 msm.update_safety(overcurrent_mask);
                 sync_drive!(rover, msm);
-                iface.send_response(format_response(msm.telemetry(overcurrent_mask), &mut resp_buf));
+                iface.send_response(format_response(
+                    msm.telemetry(overcurrent_mask, sensor_frame), &mut resp_buf));
             }
         }
 
@@ -421,7 +386,7 @@ fn main() -> ! {
         tlm_counter = tlm_counter.wrapping_add(1);
         if tlm_counter >= TLM_PERIOD {
             tlm_counter = 0;
-            iface.send_response(format_response(msm.telemetry(0), &mut resp_buf));
+            iface.send_response(format_response(msm.telemetry(0, sensor_frame), &mut resp_buf));
         }
 
         // delay_ms restaurado: la ISR USART0_RX garantiza que ningún byte

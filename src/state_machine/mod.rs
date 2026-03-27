@@ -67,12 +67,26 @@ impl DriveOutput {
     pub const STOP: Self = Self { left: 0, right: 0 };
 }
 
+/// Datos de sensores analógicos incluidos en el frame TLM extendido.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct SensorFrame {
+    /// Corriente en mA por motor: [FR, FL, CR, CL, RR, RL].
+    pub currents: [i32; 6],
+    /// Temperatura ambiente en °C (LM335).
+    pub temp_c: i32,
+}
+
+impl SensorFrame {
+    /// Frame vacío para inicialización (cero en todo).
+    pub const ZERO: Self = Self { currents: [0; 6], temp_c: 0 };
+}
+
 /// Respuesta a enviar de vuelta a la RPi5.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Response {
     Pong,
     Ack(RoverState),
-    Telemetry { safety: SafetyState, stall_mask: u8 },
+    Telemetry { safety: SafetyState, stall_mask: u8, sensors: SensorFrame },
     ErrEstop,
     ErrUnknown,
     ErrWatchdog,
@@ -183,9 +197,9 @@ impl MasterStateMachine {
         }
     }
 
-    /// Construye un frame de telemetría con el estado actual.
-    pub fn telemetry(&self, stall_mask: u8) -> Response {
-        Response::Telemetry { safety: self.safety, stall_mask }
+    /// Construye un frame de telemetría extendido con sensores incluidos.
+    pub fn telemetry(&self, stall_mask: u8, sensors: SensorFrame) -> Response {
+        Response::Telemetry { safety: self.safety, stall_mask, sensors }
     }
 }
 
@@ -248,7 +262,7 @@ fn parse_i16(bytes: &[u8]) -> Option<i16> {
 // ─── Formateador de respuestas ────────────────────────────────────────────────
 
 /// Serializa una `Response` en `buf`. Retorna el slice válido con el frame.
-/// `buf` debe tener al menos 24 bytes.
+/// `buf` debe tener al menos 80 bytes (para el TLM extendido con sensores).
 pub fn format_response<'a>(resp: Response, buf: &'a mut [u8]) -> &'a [u8] {
     match resp {
         Response::Pong           => copy_literal(buf, b"PONG\n"),
@@ -256,7 +270,8 @@ pub fn format_response<'a>(resp: Response, buf: &'a mut [u8]) -> &'a [u8] {
         Response::ErrUnknown     => copy_literal(buf, b"ERR:UNKNOWN\n"),
         Response::ErrWatchdog    => copy_literal(buf, b"ERR:WDOG\n"),
         Response::Ack(state)     => format_ack(buf, state_label(state)),
-        Response::Telemetry { safety, stall_mask } => format_tlm(buf, safety, stall_mask),
+        Response::Telemetry { safety, stall_mask, sensors } =>
+            format_tlm(buf, safety, stall_mask, sensors),
     }
 }
 
@@ -285,9 +300,14 @@ fn format_ack<'a>(buf: &'a mut [u8], label: &[u8]) -> &'a [u8] {
     &buf[..i]
 }
 
-/// `TLM:<SAFETY>:<STALL_MASK>\n`  — máximo 18 bytes (TLM:NORMAL:000000\n)
-/// STALL_MASK: 6 chars '0'/'1', bit5..bit0 (motor5..motor0).
-fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8) -> &'a [u8] {
+/// `TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C\n`
+///
+/// - STALL_MASK: 6 bits '0'/'1', bit5..bit0 (motor5..motor0)
+/// - I0–I5: corriente en mA por motor (puede ser negativa)
+/// - T: temperatura en °C
+///
+/// `buf` debe tener al menos 80 bytes.
+fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensors: SensorFrame) -> &'a [u8] {
     let safety_label: &[u8] = match safety {
         SafetyState::Normal     => b"NORMAL",
         SafetyState::Warn       => b"WARN",
@@ -295,13 +315,44 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8) -> &'a
         SafetyState::FaultStall => b"FAULT",
     };
     let mut i = 0;
-    for &b in b"TLM:"      { buf[i] = b; i += 1; }
-    for &b in safety_label  { buf[i] = b; i += 1; }
+    for &b in b"TLM:"     { buf[i] = b; i += 1; }
+    for &b in safety_label { buf[i] = b; i += 1; }
     buf[i] = b':'; i += 1;
     for bit in (0..6u8).rev() {
         buf[i] = if (stall_mask >> bit) & 1 == 1 { b'1' } else { b'0' };
         i += 1;
     }
+    for current in &sensors.currents {
+        buf[i] = b':'; i += 1;
+        write_i32(*current, buf, &mut i);
+    }
+    buf[i] = b':'; i += 1;
+    write_i32(sensors.temp_c, buf, &mut i);
+    buf[i] = b'C'; i += 1;
     buf[i] = b'\n'; i += 1;
     &buf[..i]
+}
+
+/// Escribe un i32 como dígitos ASCII en buf[pos..]. Avanza pos.
+fn write_i32(val: i32, buf: &mut [u8], pos: &mut usize) {
+    if val == 0 {
+        buf[*pos] = b'0';
+        *pos += 1;
+        return;
+    }
+    let neg = val < 0;
+    let mut v: u32 = if neg { (-(val as i64)) as u32 } else { val as u32 };
+    if neg { buf[*pos] = b'-'; *pos += 1; }
+    let start = *pos;
+    let mut tmp = [0u8; 10];
+    let mut len = 0usize;
+    while v > 0 {
+        tmp[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    for k in 0..len {
+        buf[start + k] = tmp[len - 1 - k];
+    }
+    *pos += len;
 }
