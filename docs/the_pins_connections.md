@@ -78,15 +78,22 @@ D18/D19 disponibles gracias a que RPi5 usa USART3 (D14/D15), no USART1.
 > Fase B no se usa en la implementación actual (solo detección de stall, no dirección).
 
 ### 7. Sensores de Proximidad (Ultrasonido y LiDAR)
-
-### 8. Sensores de Proximidad (Ultrasonido y LiDAR)
 Detección de obstáculos y navegación autónoma.
 
 | Sensor | Pin Arduino | Registro | Función | Notas |
 | :--- | :--- | :--- | :--- | :--- |
-| **HC-SR04 (Trig)** | **D38** | PD7 | Trigger Out | Pulso de 10µs |
+| **HC-SR04 (Trig)** | **D38** | PD7 | Trigger Out | Pulso de 20µs |
 | **HC-SR04 (Echo)** | **D39** | PG2 | Echo In | Medición de tiempo |
 | **TF-Luna (RX)** | **D16** | PH1 | TX2 (Out) | Baud: 115200 (¡Divisor 3.3V recomendado!) |
 | **TF-Luna (TX)** | **D17** | PH0 | RX2 (In) | Lectura de paquetes (9-byte frame) |
 | **VCC** | **5V** | - | Power | Alimentación 5V DC |
+| **GND** | **GND** | GND | Ground | Tierra común |
+
+### 8. Sensores Analógicos (Corriente y Temperatura)
+
+| Sensor | Pin Arduino | Registro | Función | Notas |
+| :--- | :--- | :--- | :--- | :--- |
+| **ACS712-30A (OUT)** | **A0** | PF0 | ADC canal 0 | Corriente ±30A, 66 mV/A, V_zero=2.5V |
+| **LM335 (OUT)**      | **A1** | PF1 | ADC canal 1 | Temperatura, 10 mV/K, R_bias 2kΩ a 5V |
+| **VCC** | **5V** | - | Power | Ambos sensores alimentados a 5V |
 | **GND** | **GND** | GND | Ground | Tierra común |
