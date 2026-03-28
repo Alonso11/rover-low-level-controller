@@ -1,40 +1,68 @@
-// Version: v1.0
-//! # Driver ACS712-30A — Sensor de corriente por efecto Hall
+// Version: v1.1
+//! # Driver ACS712 — Sensor de corriente por efecto Hall
 //!
 //! Convierte lecturas crudas de ADC (10-bit, AVCC=5V) a corriente en mA.
+//! Disponible en variantes de ±5 A y ±30 A con distinta sensibilidad.
 //!
-//! Este driver es puro Rust sin dependencias de `arduino_hal`: recibe el
+//! ## Constructores recomendados
+//! | Variante       | Rango | Sensibilidad | Uso en rover              |
+//! |----------------|-------|--------------|---------------------------|
+//! | `new_05a()`    | ±5 A  | 185 mV/A     | Motores con L298N (2A)    |
+//! | `new_30a()`    | ±30 A | 66 mV/A      | Motores con BTS7960 (43A) |
+//!
+//! ## Selección automática según feature de Cargo
+//! - (default / `all-l298n`): `new_05a()` para los 6 motores
+//! - `mixed-drivers`:  `new_05a()` para FR/FL, `new_30a()` para CR/CL/RR/RL
+//! - `all-bts7960`:   `new_30a()` para los 6 motores
+//!
+//! El driver es puro Rust sin dependencias de `arduino_hal`: recibe el
 //! valor crudo del ADC para que la lógica de conversión sea testeable en x86.
-//! El manejo del ADC hardware (pin + `analog_read`) queda en `main.rs`.
-//!
-//! ## Especificaciones ACS712-30A
-//! - Rango:        ±30 A
-//! - Sensibilidad: 66 mV/A
-//! - V_out @ 0 A:  VCC/2 = 2500 mV  (ajustable con `with_zero_mv`)
 
-/// Sensibilidad del ACS712-30A en mV por amperio.
-const SENSITIVITY_MV_PER_A: i32 = 66;
-
-/// Driver para el sensor de corriente ACS712-30A.
+/// Driver para el sensor de corriente ACS712.
+#[derive(Clone, Copy)]
 pub struct ACS712 {
-    /// Voltaje de offset a corriente cero en mV (teórico: 2500).
-    /// Ajustar con `with_zero_mv` tras calibración en hardware real.
+    /// Voltaje de offset a corriente cero en mV (teórico: 2500 = VCC/2).
     zero_mv: i32,
+    /// Sensibilidad del sensor en mV por amperio.
+    /// ACS712-05A: 185 mV/A  |  ACS712-30A: 66 mV/A
+    sensitivity_mv_a: i32,
 }
 
 impl ACS712 {
-    /// Crea una instancia con el offset estándar de 2500 mV (VCC/2).
-    pub fn new() -> Self {
-        Self { zero_mv: 2500 }
+    /// ACS712-05A: ±5 A, 185 mV/A.
+    /// Recomendado para motores con driver L298N (2 A continuo).
+    /// Resolución: ~27 mA/count — 3× mejor que el 30A en este rango.
+    pub fn new_05a() -> Self {
+        Self { zero_mv: 2500, sensitivity_mv_a: 185 }
     }
 
-    /// Crea una instancia con offset de calibración personalizado.
+    /// ACS712-30A: ±30 A, 66 mV/A.
+    /// Recomendado para motores con driver BTS7960 (43 A pico).
+    /// Resolución: ~74 mA/count.
+    pub fn new_30a() -> Self {
+        Self { zero_mv: 2500, sensitivity_mv_a: 66 }
+    }
+
+    /// Alias de `new_30a()` para compatibilidad con código existente.
+    pub fn new() -> Self {
+        Self::new_30a()
+    }
+
+    /// Crea una instancia 30A con offset de calibración personalizado.
     ///
     /// # Calibración
     /// Con 0 A real: leer ADC crudo, calcular `zero_mv = (adc * 5000) / 1023`
     /// y pasar ese valor aquí.
     pub fn with_zero_mv(zero_mv: i32) -> Self {
-        Self { zero_mv }
+        Self { zero_mv, sensitivity_mv_a: 66 }
+    }
+
+    /// Aplica un offset de calibración a una instancia existente (builder).
+    ///
+    /// Uso: `ACS712::new_05a().calibrate_zero(measured_mv)`
+    pub fn calibrate_zero(mut self, zero_mv: i32) -> Self {
+        self.zero_mv = zero_mv;
+        self
     }
 
     /// Convierte un valor crudo de ADC (10-bit, AVCC=5V) a corriente en mA.
@@ -42,21 +70,16 @@ impl ACS712 {
     /// Retorna valores negativos si la corriente fluye en sentido contrario.
     ///
     /// # Fórmula
-    /// Se calcula el punto de cruce por cero en unidades ADC (redondeado al
-    /// entero más cercano) para evitar error de truncación al pasar dos veces
-    /// por división entera (ADC→mV→mA):
     /// ```
-    /// zero_adc   = round(zero_mv × 1023 / 5000)
-    /// delta_adc  = adc − zero_adc
-    /// I_mA       = delta_adc × 5 000 000 / (1023 × 66)
+    /// zero_adc  = round(zero_mv × 1023 / 5000)
+    /// delta_adc = adc − zero_adc
+    /// I_mA      = delta_adc × 5_000_000 / (1023 × sensitivity_mv_a)
     /// ```
     pub fn read_ma(&self, adc_raw: u16) -> i32 {
-        // Redondeo al entero más cercano: +2500 antes de dividir por 5000.
-        let zero_adc = (self.zero_mv as u32 * 1023 + 2500) / 5000;
+        let zero_adc  = (self.zero_mv as u32 * 1023 + 2500) / 5000;
         let delta_adc = adc_raw as i32 - zero_adc as i32;
-        // Usa i64 para evitar desbordamiento (max: 512 × 5_000_000 > i32::MAX).
         ((delta_adc as i64 * 5_000_000_i64)
-            / (1023_i64 * SENSITIVITY_MV_PER_A as i64)) as i32
+            / (1023_i64 * self.sensitivity_mv_a as i64)) as i32
     }
 
     /// Retorna `true` si el valor absoluto de corriente supera `threshold_ma`.

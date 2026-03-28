@@ -70,13 +70,44 @@ const STALL_SPEED_MIN: i16 = 20;
 /// Cada cuántos ciclos leer los sensores analógicos (~500 ms).
 const SEN_READ_PERIOD: u8 = 25;
 
-/// Umbrales de sobrecorriente por motor (L298N: 2 A continuo, 3 A pico).
-/// Warn  → notificar via TLM, rover sigue.
-/// Limit → recortar velocidad a LIMIT_SPEED_CAP %.
-/// Fault → parar todo, esperar RST.
-const OVERCURRENT_WARN_MA:  i32 = 1200; // 60 % de 2A
-const OVERCURRENT_LIMIT_MA: i32 = 1600; // 80 % de 2A
-const OVERCURRENT_FAULT_MA: i32 = 2000; // 100 % de 2A — límite continuo del L298N
+/// Umbrales base para driver L298N (2 A continuo, 3 A pico).
+const OC_WARN_L298N:  i32 = 1_200; // 60 % de 2A
+const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2A
+const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2A
+
+/// Umbrales base para driver BTS7960 (ajustar según motor real tras calibración).
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
+const OC_WARN_BTS:  i32 = 8_000;  // ~20 % del pico — indicativo
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
+const OC_LIMIT_BTS: i32 = 12_000; // ~28 % del pico
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
+const OC_FAULT_BTS: i32 = 15_000; // ~35 % del pico
+
+/// Umbrales de sobrecorriente por motor [FR, FL, CR, CL, RR, RL].
+/// Seleccionados en tiempo de compilación según el feature activo:
+///   (default)     → all-l298n:     todos OC_*_L298N
+///   mixed-drivers → FR/FL=L298N, CR/CL/RR/RL=BTS7960
+///   all-bts7960   → todos OC_*_BTS
+#[cfg(feature = "mixed-drivers")]
+const OC_WARN:  [i32; 6] = [OC_WARN_L298N,  OC_WARN_L298N,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS];
+#[cfg(feature = "mixed-drivers")]
+const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N, OC_LIMIT_L298N, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS];
+#[cfg(feature = "mixed-drivers")]
+const OC_FAULT: [i32; 6] = [OC_FAULT_L298N, OC_FAULT_L298N, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS];
+
+#[cfg(feature = "all-bts7960")]
+const OC_WARN:  [i32; 6] = [OC_WARN_BTS;  6];
+#[cfg(feature = "all-bts7960")]
+const OC_LIMIT: [i32; 6] = [OC_LIMIT_BTS; 6];
+#[cfg(feature = "all-bts7960")]
+const OC_FAULT: [i32; 6] = [OC_FAULT_BTS; 6];
+
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+const OC_WARN:  [i32; 6] = [OC_WARN_L298N;  6];
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N; 6];
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
 
 /// Velocidad máxima (%) aplicada a todos los motores cuando safety == Limit.
 const LIMIT_SPEED_CAP: i16 = 60;
@@ -252,8 +283,21 @@ fn main() -> ! {
     let acs_rl_pin = pins.a5.into_analog_input(&mut adc);
     let lm335_pin  = pins.a6.into_analog_input(&mut adc);
 
-    let acs712 = ACS712::new();   // offset 2500 mV — ajustar con with_zero_mv si es necesario
-    let lm335  = LM335::new();    // offset 0 K — ajustar con with_offset si es necesario
+    // Instancias ACS712 por motor [FR, FL, CR, CL, RR, RL].
+    // La variante (05A/30A) se elige en compilación según el feature activo.
+    // Para calibrar el zero_mv de un motor concreto usar .calibrate_zero(mv).
+    #[cfg(feature = "mixed-drivers")]
+    let acs: [ACS712; 6] = [
+        ACS712::new_05a(), ACS712::new_05a(), // FR, FL → L298N
+        ACS712::new_30a(), ACS712::new_30a(), // CR, CL → BTS7960
+        ACS712::new_30a(), ACS712::new_30a(), // RR, RL → BTS7960
+    ];
+    #[cfg(feature = "all-bts7960")]
+    let acs: [ACS712; 6] = [ACS712::new_30a(); 6];
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+    let acs: [ACS712; 6] = [ACS712::new_05a(); 6]; // all-l298n (default)
+
+    let lm335 = LM335::new(); // offset 0 K — ajustar con with_offset si es necesario
 
     // ── Interrupciones externas INT0–INT5 (rising edge) ──────────────────────
     // EICRA: controla INT0–INT3 (ISCn1=1, ISCn0=1 → rising edge)
@@ -382,7 +426,7 @@ fn main() -> ! {
             ];
             let mut fault_mask: u8 = 0;
             for i in 0..6usize {
-                if acs712.read_ma(fast_raw[i]).abs() > OVERCURRENT_FAULT_MA {
+                if acs[i].read_ma(fast_raw[i]).abs() > OC_FAULT[i] {
                     fault_mask |= 1 << i;
                 }
             }
@@ -409,17 +453,18 @@ fn main() -> ! {
                 adc_avg!(acs_rl_pin, adc, SEN_SAMPLES),
             ];
 
-            // Clasificar el peor nivel de corriente entre los 6 motores
+            // Clasificar el peor nivel de corriente entre los 6 motores.
+            // Cada motor usa su propia instancia ACS712 y sus umbrales OC_*[i].
             let mut worst = SafetyState::Normal;
             for i in 0..6usize {
-                let current_ma = acs712.read_ma(raw_i[i]);
+                let current_ma = acs[i].read_ma(raw_i[i]);
                 sensor_frame.currents[i] = current_ma;
                 let abs_ma = current_ma.abs();
-                let level = if abs_ma > OVERCURRENT_FAULT_MA {
+                let level = if abs_ma > OC_FAULT[i] {
                     SafetyState::FaultStall
-                } else if abs_ma > OVERCURRENT_LIMIT_MA {
+                } else if abs_ma > OC_LIMIT[i] {
                     SafetyState::Limit
-                } else if abs_ma > OVERCURRENT_WARN_MA {
+                } else if abs_ma > OC_WARN[i] {
                     SafetyState::Warn
                 } else {
                     SafetyState::Normal

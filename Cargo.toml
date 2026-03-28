@@ -21,6 +21,19 @@ required-features = ["avr"]
 default = ["avr"]
 avr = ["panic-halt", "avr-device", "arduino-hal"]
 
+# ── Configuración de drivers de motor ────────────────────────────────────────
+# Selecciona qué drivers y sensores ACS712 se usan por motor.
+# Solo uno debe estar activo; si ninguno está activo se asume all-l298n.
+#
+#   (default)      Todos los motores con L298N  + ACS712-05A
+#   mixed-drivers  FR/FL=L298N(05A) | CR/CL/RR/RL=BTS7960(30A)
+#   all-bts7960    Todos los motores con BTS7960 + ACS712-30A
+#
+# Uso: RUSTFLAGS="-C target-cpu=atmega2560" cargo +nightly build \
+#        -Zbuild-std=core -Zjson-target-spec --features avr,mixed-drivers
+mixed-drivers = []
+all-bts7960   = []
+
 # ─── Dependencias ─────────────────────────────────────────────────────────────
 [dependencies]
 # Siempre disponibles (usados también en state_machine, que es puro Rust)

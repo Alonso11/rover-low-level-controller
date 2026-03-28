@@ -84,6 +84,53 @@ fn test_acs712_symmetry() {
     assert!((pos + neg).abs() < 30, "debe ser simétrico: {} + {} ≈ 0", pos, neg);
 }
 
+// ─── ACS712-05A ───────────────────────────────────────────────────────────────
+
+#[test]
+fn test_acs712_05a_zero_current() {
+    // ADC 512 → V = 2500 mV → I = 0 mA (igual que 30A, mismo zero)
+    let acs = ACS712::new_05a();
+    assert_eq!(acs.read_ma(512), 0);
+}
+
+#[test]
+fn test_acs712_05a_positive_2a() {
+    // 2 A → V = 2500 + 2×185 = 2870 mV → ADC = round(2870×1023/5000) = 587
+    let acs = ACS712::new_05a();
+    let ma = acs.read_ma(587);
+    assert!((ma - 2000).abs() < 30, "esperado ~2000 mA, got {}", ma);
+}
+
+#[test]
+fn test_acs712_05a_mayor_resolucion_que_30a() {
+    // Mejor resolución = 1 count de ADC representa menos mA.
+    // 05A: (1×5_000_000)/(1023×185) ≈ 26 mA/count
+    // 30A: (1×5_000_000)/(1023×66)  ≈ 74 mA/count
+    let acs_05 = ACS712::new_05a();
+    let acs_30 = ACS712::new_30a();
+    let step_05 = acs_05.read_ma(513).abs(); // 1 count sobre zero (ADC 512)
+    let step_30 = acs_30.read_ma(513).abs();
+    assert!(step_05 < step_30,
+        "05A debe tener menor mA/count (mejor resolución): 05A={} 30A={}", step_05, step_30);
+}
+
+#[test]
+fn test_acs712_calibrate_zero_builder() {
+    // new_05a().calibrate_zero(zero_mv) → lectura en zero_adc debe ser ~0 mA
+    // V(580) = (580×5000)/1023 = 2835 mV
+    let acs = ACS712::new_05a().calibrate_zero(2835);
+    let ma = acs.read_ma(580);
+    assert!(ma.abs() < 15, "calibrado debe dar ~0 mA, got {}", ma);
+}
+
+#[test]
+fn test_acs712_new_es_alias_30a() {
+    // new() y new_30a() deben dar el mismo resultado
+    let a = ACS712::new();
+    let b = ACS712::new_30a();
+    assert_eq!(a.read_ma(647), b.read_ma(647));
+}
+
 // ─── LM335 ────────────────────────────────────────────────────────────────────
 
 #[test]
