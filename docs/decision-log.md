@@ -132,11 +132,29 @@ cargo +nightly test --target x86_64-unknown-linux-gnu --no-default-features --te
 
 ---
 
-## Pendiente (al 24 mar 2026)
+## Semana 4 — Protección de corriente graduada (28 mar 2026)
+
+| Fecha | Decisión | Motivo |
+|---|---|---|
+| 2026-03-28 | Reemplazar umbral único `OVERCURRENT_MA=2500` por tres umbrales: `WARN=1200 / LIMIT=1600 / FAULT=2000` mA | El umbral original (2500 mA) superaba el rating continuo del L298N (2 A). Los nuevos umbrales se alinean con el datasheet: 60 %/80 %/100 % de 2 A |
+| 2026-03-28 | Activar `SafetyState::Warn` y `::Limit` para sobrecorriente graduada | Los estados ya existían en la MSM pero nunca se usaban — el rover pasaba directamente de `Normal` a `FaultStall` sin oportunidad de reducir velocidad |
+| 2026-03-28 | Diseño de dos tiers de muestreo ADC: fast (60 ms, 2 muestras) + slow (500 ms, 8 muestras) | Un solo tier a 500 ms dejaba el L298N desprotegido durante medio segundo; el tier rápido detecta fault en ~60 ms con mínimo overhead (~1.25 ms bloqueantes) |
+| 2026-03-28 | Fast tier solo detecta `FaultStall` (≥2000 mA); slow tier clasifica `Warn`/`Limit`/`Fault` | Los picos de cortocircuito requieren reacción rápida pero baja precisión; Warn/Limit son estados sostenidos que necesitan las 8 muestras promediadas para evitar falsos positivos |
+| 2026-03-28 | `sync_drive!` aplica cap de velocidad a 60 % cuando `safety == Limit` | La reducción de velocidad debe ser transparente para todos los puntos de `sync_drive!` en el loop — centralizar en la macro evita duplicación |
+| 2026-03-28 | Añadir `update_overcurrent()` a `MasterStateMachine` separado de `update_safety()` | `update_safety` maneja stall (siempre `FaultStall`); `update_overcurrent` maneja corriente con niveles graduados. Semánticamente distintos — mezclarlos haría ambigua la causa del fault |
+| 2026-03-28 | Derivar `Eq, PartialOrd, Ord` en `SafetyState` | Permite comparar niveles con `>` en lugar de match anidado en `update_overcurrent` — más legible y menos propenso a errores al añadir futuros niveles |
+| 2026-03-28 | Nota hardware: el firmware no reemplaza protección física | A 60 ms de latencia, un cortocircuito puede dañar el L298N antes de que el firmware actúe. Se recomienda añadir un polyfuse de 2 A en la alimentación de cada driver L298N como protección primaria |
+
+---
+
+## Pendiente (al 28 mar 2026)
 
 | Tarea | Bloqueante | Prioridad |
 |---|---|---|
-| Flash firmware al Arduino y verificar protocolo MSM por serial | Sin acceso al hardware físico | Alta — bloquea todas las pruebas de integración |
+| Flash v2.4 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible el 28 mar | Alta — bloquea todas las pruebas de integración |
+| Calibrar `zero_mv` del ACS712 con motores desconectados | Flash pendiente | Alta — afecta precisión de Warn/Limit |
+| Verificar umbrales Warn/Limit en hardware real (¿son 1200/1600 mA correctos para los motores del rover?) | Flash + calibración pendiente | Media |
 | Integrar TF-Luna en `main.rs` (capa táctica <150 cm → `AVD`) | Flash pendiente | Media |
-| Extender telemetría `TLM` con distancias de sensores | Flash pendiente | Baja |
+| Cambiar USART0 → USART3 para producción con RPi5 | Flash + validación pendiente | Media |
 | PR `feature/msm-main-integration` → `debug` | Flash + validación pendiente | Media |
+| Añadir polyfuse 2 A en alimentación de cada L298N | Diseño electrónico | Media — protección hardware primaria |

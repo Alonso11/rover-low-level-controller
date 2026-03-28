@@ -48,7 +48,7 @@ pub enum RoverState {
 }
 
 /// Estado de seguridad local del Nodo B.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum SafetyState {
     Normal,
     Warn,
@@ -194,6 +194,35 @@ impl MasterStateMachine {
             self.safety = SafetyState::FaultStall;
             self.state = RoverState::Fault;
             self.drive = DriveOutput::STOP;
+        }
+    }
+
+    /// Notifica nivel de sobrecorriente graduado (ACS712).
+    /// Retorna `true` si el estado resultante es Fault (parar motores).
+    ///
+    /// - `FaultStall` → para todo, espera RST.
+    /// - `Warn`/`Limit` → escala safety si no hay algo peor ya activo.
+    /// - `Normal` → resetea Warn/Limit (no toca FaultStall por stall activo).
+    pub fn update_overcurrent(&mut self, level: SafetyState) -> bool {
+        match level {
+            SafetyState::FaultStall => {
+                self.safety = SafetyState::FaultStall;
+                self.state  = RoverState::Fault;
+                self.drive  = DriveOutput::STOP;
+                true
+            }
+            SafetyState::Warn | SafetyState::Limit => {
+                if level > self.safety {
+                    self.safety = level;
+                }
+                false
+            }
+            SafetyState::Normal => {
+                if self.safety == SafetyState::Warn || self.safety == SafetyState::Limit {
+                    self.safety = SafetyState::Normal;
+                }
+                false
+            }
         }
     }
 

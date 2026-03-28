@@ -283,11 +283,12 @@ As of `feature/msm-main-integration` (v2.4), all local safety layers are active:
 - **Layer 3 — RPi5**: active via USART0 (USB) at 115200, full MSM protocol.
 - **Stall detection**: active, 6 encoders via INT0–INT5, FAULT if |speed|>20%
   and encoder frozen for >50 cycles (~1 s).
-- **Overcurrent detection**: active, 6× ACS712-30A on A0–A5, FAULT if any
-  motor exceeds 2500 mA.
+- **Overcurrent detection**: active, 6× ACS712-30A on A0–A5, two-tier graduated
+  response (see §8 for full design). Thresholds: Warn ≥1200 mA, Limit ≥1600 mA,
+  Fault ≥2000 mA.
 
-The TLM frame still does not include distance or current readings inline.
-Sensor data is reported as separate `SEN:` frames every ~500 ms.
+The TLM frame includes current readings and temperature inline (TLM extendido).
+Distance readings (HC-SR04, TF-Luna) are not yet included in the TLM frame.
 
 ---
 
@@ -430,7 +431,7 @@ No other code needs to change.
 
 ---
 
-## 8. ADC Multiplexado y Promediado — ACS712 + LM335
+## 8. ADC Multiplexado, Promediado y Protección de Corriente — ACS712 + LM335
 
 ### Hardware ADC del ATmega2560
 
@@ -473,7 +474,7 @@ N=16: σ ≈ ±225 / √16 ≈ ±56 mA
 
 Para el LM335 (10 mV/K), N=8 da σ ≈ **±0.5 °C** frente a ±1.5 °C sin promediado.
 
-### Implementación
+### Implementación — Macro `adc_avg!`
 
 La macro `adc_avg!` en `main.rs` centraliza el patrón:
 
@@ -487,12 +488,66 @@ macro_rules! adc_avg {
 }
 ```
 
-Tiempo total bloqueante por lectura de todos los sensores:
+### Protección de corriente graduada — Diseño de dos tiers
+
+El L298N soporta **2 A en continuo** y **3 A de pico** por canal. Un único umbral
+de fault a 500 ms dejaba el chip desprotegido durante medio segundo ante un
+bloqueo mecánico o cortocircuito.
+
+La solución adopta dos velocidades de muestreo independientes:
 
 ```
-7 canales × 8 muestras × 104 µs = ~5.8 ms
-Frecuencia de lectura: cada 25 ciclos × 20 ms = 500 ms
-Overhead: 5.8 ms / 500 ms = 1.2 % del tiempo de CPU
+Fast tier  — cada 3 ciclos (~60 ms), 2 muestras/canal
+             Solo detecta Fault (≥ OVERCURRENT_FAULT_MA)
+             ~1.25 ms bloqueantes por ejecución
+
+Slow tier  — cada 25 ciclos (~500 ms), 8 muestras/canal
+             Clasifica Warn / Limit / Fault + actualiza sensor_frame para TLM
+             ~5.8 ms bloqueantes por ejecución
+```
+
+**Umbrales vs rating del L298N:**
+
+| Constante | Valor | Fracción de 2A | Acción |
+|---|---|---|---|
+| `OVERCURRENT_WARN_MA`  | 1200 mA | 60 % | Notifica vía TLM, rover sigue |
+| `OVERCURRENT_LIMIT_MA` | 1600 mA | 80 % | Recorta velocidad a `LIMIT_SPEED_CAP` (60 %) |
+| `OVERCURRENT_FAULT_MA` | 2000 mA | 100 % | Para todo, espera `RST` |
+
+**Por qué umbrales distintos en cada tier:**
+- Fault necesita reacción rápida pero baja precisión — 2 muestras son suficientes
+  para detectar una corriente claramente fuera de rango.
+- Warn/Limit son estados sostenidos — las 8 muestras promediadas evitan falsos
+  positivos causados por el ruido ADC (±80 mA con N=8, ver tabla arriba).
+
+**El macro `sync_drive!` aplica el cap de velocidad automáticamente:**
+
+```rust
+// Fragmento del macro sync_drive!
+_ => {
+    let (l, r) = if msm.safety == SafetyState::Limit {
+        (drive.left.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP), ...)
+    } else {
+        (drive.left, drive.right)
+    };
+    rover.set_speeds(l, r);
+}
+```
+
+Esto garantiza que el cap se aplica en todos los puntos del loop donde se
+llama `sync_drive!`, sin código duplicado.
+
+**Limitación importante:** El firmware no puede reemplazar protección hardware.
+A 60 ms de latencia, un cortocircuito real puede dañar el L298N antes de que el
+firmware actúe. La protección primaria debe ser un **polyfuse de 2 A** en la
+línea de alimentación de cada driver. El firmware actúa como segunda línea de
+defensa para condiciones de sobrecarga sostenida.
+
+**Tiempos totales bloqueantes:**
+
+```
+Fast tier: 6 canales × 2 muestras × 104 µs = ~1.25 ms  cada ~60 ms  (2.1 % CPU)
+Slow tier: 7 canales × 8 muestras × 104 µs = ~5.8 ms   cada ~500 ms (1.2 % CPU)
 ```
 
 ### Diseño HAL-independiente de los drivers

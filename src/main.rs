@@ -42,7 +42,8 @@ use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
-    format_response, parse_command, Command, MasterStateMachine, Response, RoverState, SensorFrame,
+    format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
+    SafetyState, SensorFrame,
 };
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
@@ -69,14 +70,28 @@ const STALL_SPEED_MIN: i16 = 20;
 /// Cada cuántos ciclos leer los sensores analógicos (~500 ms).
 const SEN_READ_PERIOD: u8 = 25;
 
-/// Corriente máxima por motor en mA antes de declarar FAULT.
-/// L298N soporta 2 A continuos; 2500 mA da margen ante picos breves.
-const OVERCURRENT_MA: i32 = 2500;
+/// Umbrales de sobrecorriente por motor (L298N: 2 A continuo, 3 A pico).
+/// Warn  → notificar via TLM, rover sigue.
+/// Limit → recortar velocidad a LIMIT_SPEED_CAP %.
+/// Fault → parar todo, esperar RST.
+const OVERCURRENT_WARN_MA:  i32 = 1200; // 60 % de 2A
+const OVERCURRENT_LIMIT_MA: i32 = 1600; // 80 % de 2A
+const OVERCURRENT_FAULT_MA: i32 = 2000; // 100 % de 2A — límite continuo del L298N
+
+/// Velocidad máxima (%) aplicada a todos los motores cuando safety == Limit.
+const LIMIT_SPEED_CAP: i16 = 60;
 
 /// Número de muestras ADC a promediar por canal.
 /// El ATmega2560 tiene un solo ADC multiplexado: cada muestra toma ~104 µs.
 /// 8 muestras × 7 canales = ~5.8 ms bloqueantes cada SEN_READ_PERIOD ciclos.
 const SEN_SAMPLES: u8 = 8;
+
+/// Muestras ADC para el chequeo rápido de sobrecorriente (solo detección de Fault).
+/// 2 muestras × 6 canales × ~104 µs = ~1.25 ms bloqueantes cada SEN_FAST_PERIOD ciclos.
+const SEN_FAST_SAMPLES: u8 = 2;
+
+/// Cada cuántos ciclos ejecutar el chequeo rápido (~60 ms a 20 ms/ciclo).
+const SEN_FAST_PERIOD: u8 = 3;
 
 // ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
 //
@@ -157,11 +172,20 @@ macro_rules! adc_avg {
 }
 
 /// Aplica msm.drive al rover; en FAULT/STANDBY para todos los motores.
+/// En estado Limit recorta la velocidad a LIMIT_SPEED_CAP %.
 macro_rules! sync_drive {
     ($rover:expr, $msm:expr) => {
         match $msm.state {
             RoverState::Fault | RoverState::Standby => $rover.stop(),
-            _ => $rover.set_speeds($msm.drive.left, $msm.drive.right),
+            _ => {
+                let (l, r) = if $msm.safety == SafetyState::Limit {
+                    ($msm.drive.left.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP),
+                     $msm.drive.right.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP))
+                } else {
+                    ($msm.drive.left, $msm.drive.right)
+                };
+                $rover.set_speeds(l, r);
+            }
         }
     };
 }
@@ -241,11 +265,12 @@ fn main() -> ! {
     unsafe { avr_device::interrupt::enable() };
 
     // ── Estado del loop ──────────────────────────────────────────────────────
-    let mut msm          = MasterStateMachine::new();
-    let mut resp_buf     = [0u8; RESP_BUF];
-    let mut tlm_counter: u8  = 0;
-    let mut hc_counter:  u8  = 0;
-    let mut sen_counter: u8  = 0;
+    let mut msm              = MasterStateMachine::new();
+    let mut resp_buf         = [0u8; RESP_BUF];
+    let mut tlm_counter:      u8 = 0;
+    let mut hc_counter:       u8 = 0;
+    let mut sen_counter:      u8 = 0;
+    let mut sen_fast_counter: u8 = 0;
     let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
 
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
@@ -341,15 +366,40 @@ fn main() -> ! {
             iface.send_response(format_response(response, &mut resp_buf));
         }
 
-        // 5. Sensores analógicos — corriente (ACS712) y temperatura (LM335)
-        //    Lectura cada SEN_READ_PERIOD ciclos (~500 ms), promedio SEN_SAMPLES muestras.
-        //    Actualiza sensor_frame que se incluirá en el siguiente frame TLM.
-        //    Sobrecorriente en cualquier motor → FAULT inmediato.
+        // 5a. Chequeo rápido de sobrecorriente — cada SEN_FAST_PERIOD ciclos (~60 ms).
+        //     Solo 2 muestras por canal (~1.25 ms bloqueantes): detecta Fault únicamente.
+        //     No actualiza sensor_frame (usa las últimas lecturas lentas para TLM).
+        sen_fast_counter = sen_fast_counter.wrapping_add(1);
+        if sen_fast_counter >= SEN_FAST_PERIOD && msm.state != RoverState::Fault {
+            sen_fast_counter = 0;
+            let fast_raw = [
+                adc_avg!(acs_fr_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_fl_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_cr_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_cl_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_rr_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_rl_pin, adc, SEN_FAST_SAMPLES),
+            ];
+            let mut fault_mask: u8 = 0;
+            for i in 0..6usize {
+                if acs712.read_ma(fast_raw[i]).abs() > OVERCURRENT_FAULT_MA {
+                    fault_mask |= 1 << i;
+                }
+            }
+            if fault_mask != 0 {
+                msm.update_overcurrent(SafetyState::FaultStall);
+                sync_drive!(rover, msm);
+                iface.send_response(format_response(
+                    msm.telemetry(fault_mask, sensor_frame), &mut resp_buf));
+            }
+        }
+
+        // 5b. Sensores analógicos — corriente y temperatura, cada SEN_READ_PERIOD ciclos (~500 ms).
+        //     8 muestras: lectura precisa para Warn/Limit + actualiza sensor_frame para TLM.
         sen_counter = sen_counter.wrapping_add(1);
         if sen_counter >= SEN_READ_PERIOD {
             sen_counter = 0;
 
-            // Leer 6 canales ACS712 — promedio de SEN_SAMPLES muestras cada uno
             let raw_i = [
                 adc_avg!(acs_fr_pin, adc, SEN_SAMPLES),
                 adc_avg!(acs_fl_pin, adc, SEN_SAMPLES),
@@ -359,25 +409,38 @@ fn main() -> ! {
                 adc_avg!(acs_rl_pin, adc, SEN_SAMPLES),
             ];
 
-            let mut overcurrent_mask: u8 = 0;
+            // Clasificar el peor nivel de corriente entre los 6 motores
+            let mut worst = SafetyState::Normal;
             for i in 0..6usize {
                 let current_ma = acs712.read_ma(raw_i[i]);
                 sensor_frame.currents[i] = current_ma;
-                if acs712.is_overcurrent(current_ma, OVERCURRENT_MA) {
-                    overcurrent_mask |= 1 << i;
-                }
+                let abs_ma = current_ma.abs();
+                let level = if abs_ma > OVERCURRENT_FAULT_MA {
+                    SafetyState::FaultStall
+                } else if abs_ma > OVERCURRENT_LIMIT_MA {
+                    SafetyState::Limit
+                } else if abs_ma > OVERCURRENT_WARN_MA {
+                    SafetyState::Warn
+                } else {
+                    SafetyState::Normal
+                };
+                if level > worst { worst = level; }
             }
 
-            // Leer temperatura LM335
             let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
             sensor_frame.temp_c = lm335.read_celsius(raw_t);
 
-            // Sobrecorriente → FAULT + TLM inmediato con datos actuales
-            if overcurrent_mask != 0 {
-                msm.update_safety(overcurrent_mask);
+            let prev_safety = msm.safety;
+            let faulted = msm.update_overcurrent(worst);
+
+            // sync_drive si: hay fault, safety cambió (cap aplicado/eliminado), o sigue en Warn/Limit
+            if faulted || msm.safety != prev_safety || msm.safety != SafetyState::Normal {
                 sync_drive!(rover, msm);
+            }
+            // TLM inmediato si el estado no es Normal
+            if faulted || msm.safety != SafetyState::Normal {
                 iface.send_response(format_response(
-                    msm.telemetry(overcurrent_mask, sensor_frame), &mut resp_buf));
+                    msm.telemetry(0, sensor_frame), &mut resp_buf));
             }
         }
 
