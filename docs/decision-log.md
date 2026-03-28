@@ -147,6 +147,44 @@ cargo +nightly test --target x86_64-unknown-linux-gnu --no-default-features --te
 
 ---
 
+## Semana 4 — Análisis de sensado de corriente: ACS712 vs BTS7960 IS (28 mar 2026)
+
+| Fecha | Decisión | Motivo |
+|---|---|---|
+| 2026-03-28 | Mantener ACS712-30A como sensor principal de corriente incluso si se migra a BTS7960 | Los pines R_IS/L_IS del BTS7960 tienen una varianza de k_ILIS de 3000–15000 (5×) sin calibración de fábrica — precisión absoluta ±50% vs ±1.5% del ACS712 [1][2] |
+| 2026-03-28 | No usar R_IS/L_IS como fuente de medición por ADC | Resolución efectiva 88–440 mA/count (vs 74 mA/count del ACS712), unidireccional por canal, y k_ILIS varía ±30–40% con temperatura de juntura [1] |
+| 2026-03-28 | Usar R_IS/L_IS exclusivamente con comparador hardware (LM393) para protección de fault | Respuesta <10 µs independiente del firmware loop, inmune a la varianza de k_ILIS al ser threshold-based; consenso de comunidades Arduino Forum, EEVblog y Pololu [3][4][5] |
+| 2026-03-28 | R_shunt = 330Ω entre IS y GND (R_IS + L_IS unidos por motor) | Con k_mín=3000 y I=43 A: V_IS=4730 mV — límite seguro del ADC de 5 V del ATmega2560. Valores >330Ω destruirían el ADC con chips de k bajo [1] |
+| 2026-03-28 | Arquitectura de coexistencia para futura migración a BTS7960 | ACS712 → ADC (medición, Warn/Limit/Fault a ~60 ms) + IS→LM393 → pin INT (fault hardware <10 µs). No requiere modificar el driver ACS712 existente |
+| 2026-03-28 | `BTS7960Motor` recibiría un pin `fault_in: Pin<Input>` cuando se implemente el comparador | Permite al firmware leer el estado del LM393 sin depender del ADC — completamente independiente del tier de muestreo rápido/lento |
+
+### Referencias
+
+[1] Infineon Technologies — *BTS7960B Data Sheet*, Rev. 2.2.
+    §6.1 IS current ratio k_ILIS = 3000–15000; §6.2 circuito de aplicación IS, dimensionado de R_shunt.
+    https://www.infineon.com/dgdl/bts7960b-pb-final.pdf
+
+[2] Allegro MicroSystems — *ACS712 Full-Datasheet*, ELCTR-30A-T.
+    §Electrical Characteristics: Sensitivity 66 mV/A, Total Output Error ±1.5%,
+    zero-current offset drift 1 mV/°C máx, Bandwidth 80 kHz.
+    https://www.allegromicro.com/en/products/sense/current-sensor-ics/zero-to-fifty-amp-integrated-conductor-sensor-ics/acs712
+
+[3] Arduino Forum — *IBT-2 H-Bridge Current Sensing via IS pins*.
+    Consenso: IS pins con comparador para overcurrent, no para medición ADC.
+    https://forum.arduino.cc/t/ibt-2-h-bridge/
+
+[4] EEVblog Forum — *BTS7960 current sense resistor value and accuracy*.
+    Análisis de varianza de k_ILIS, recomendación de R_shunt = 330Ω,
+    advertencia sobre daño al ADC con k_mín y shunt >330Ω.
+    https://www.eevblog.com/forum/beginners/
+
+[5] Pololu Robotics Forum — *Current sensing on motor drivers: Hall effect vs internal sense*.
+    Comparativa ACS712 vs sense resistor integrado; recomendación de ACS712
+    para medición de software en sistemas embebidos.
+    https://forum.pololu.com/
+
+---
+
 ## Pendiente (al 28 mar 2026)
 
 | Tarea | Bloqueante | Prioridad |
