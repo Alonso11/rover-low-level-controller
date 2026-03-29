@@ -185,14 +185,43 @@ cargo +nightly test --target x86_64-unknown-linux-gnu --no-default-features --te
 
 ---
 
+## Semana 4 — Cambio de sensor de distancia táctica: TF-Luna → VL53L0X (28 mar 2026)
+
+| Fecha | Decisión | Motivo |
+|---|---|---|
+| 2026-03-28 | Sustituir TF-Luna por **GY-VL53L0XV2** (ST VL53L0X) como sensor de distancia táctica | El módulo TF-Luna no pudo ser adquirido. El VL53L0X es la alternativa disponible en inventario |
+| 2026-03-28 | Conservar el driver `src/sensors/tf_luna.rs` sin modificar | El driver está completo y documentado; se mantiene para referencia y posible uso futuro si se adquiere el componente |
+| 2026-03-28 | **NO integrar** el VL53L0X en `main.rs` en esta revisión | Requiere resolver conflicto de pines: I2C hardware del ATmega2560 (SDA=D20, SCL=D21) colisiona con encoders FR/FL (INT0/INT1). La solución requiere I2C por software (bit-bang) en pines libres (D42/D43), lo que añade complejidad no urgente en esta etapa |
+| 2026-03-28 | Mantener HC-SR04 como único sensor de distancia activo en `main.rs` | Cubre el requisito RF-003 para obstáculos ≥ 20 cm con margen suficiente para las pruebas de campo iniciales |
+
+**Comparación técnica TF-Luna vs VL53L0X:**
+
+| Parámetro | TF-Luna (previsto) | VL53L0X (disponible) |
+|---|---|---|
+| Tecnología | Láser ToF IR | Láser ToF 940 nm VCSEL |
+| Interfaz | UART (USART2, D16/D17) | I2C (conflicto D20/D21) |
+| Rango | 10 cm – 800 cm | 3 cm – 200 cm |
+| Precisión | ±6 cm | ±3% |
+| Frecuencia máx | 100 Hz | 50 Hz |
+| Conflicto de pines | Ninguno | SDA/SCL vs INT0/INT1 (encoders FR/FL) |
+
+**Solución propuesta para integración futura del VL53L0X:**
+- Usar I2C por software (bit-bang) en D42 (PL7) y D43 (PL6), ambos libres
+- Leer a ~10 Hz (cada 10 ciclos de 20ms) — suficiente para obstacle avoidance
+- No afecta encoders ni ningún otro periférico
+
+---
+
 ## Pendiente (al 28 mar 2026)
 
 | Tarea | Bloqueante | Prioridad |
 |---|---|---|
-| Flash v2.4 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible el 28 mar | Alta — bloquea todas las pruebas de integración |
+| Flash v2.5 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible | Alta — bloquea todas las pruebas de integración |
 | Calibrar `zero_mv` del ACS712 con motores desconectados | Flash pendiente | Alta — afecta precisión de Warn/Limit |
-| Verificar umbrales Warn/Limit en hardware real (¿son 1200/1600 mA correctos para los motores del rover?) | Flash + calibración pendiente | Media |
-| Integrar TF-Luna en `main.rs` (capa táctica <150 cm → `AVD`) | Flash pendiente | Media |
+| Calibrar offset NTC de baterías en hardware real | Flash pendiente | Alta — offsets actuales = 0 |
+| Verificar umbrales Warn/Limit en hardware real (¿son 1200/1600 mA correctos?) | Flash + calibración pendiente | Media |
+| Integrar VL53L0X en `main.rs` con I2C software en D42/D43 (reemplaza TF-Luna) | Diseño driver + resolución conflicto pines | Media |
 | Cambiar USART0 → USART3 para producción con RPi5 | Flash + validación pendiente | Media |
 | PR `feature/msm-main-integration` → `debug` | Flash + validación pendiente | Media |
+| Reescribir `servo.rs` con Timer1/OC1A (eliminar `delay_us` bloqueante) | — | Media — afecta estabilidad ISRs |
 | Añadir polyfuse 2 A en alimentación de cada L298N | Diseño electrónico | Media — protección hardware primaria |
