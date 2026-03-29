@@ -1,5 +1,13 @@
 # Sensor LiDAR TF-Luna
 
+> **OBSOLETO — componente no adquirido.**
+> El TF-Luna fue sustituido por el **GY-VL53L0XV2** (ST VL53L0X) al no estar
+> disponible en inventario. El driver `src/sensors/tf_luna.rs` se mantiene
+> para referencia y posible uso futuro si se adquiere el componente.
+> Ver `docs/decision-log.md` §Semana 4 — Cambio TF-Luna → VL53L0X.
+> La documentación activa del sensor de distancia táctica está en
+> `docs/the_pins_connections.md` §7 (VL53L0X, D42/D43 soft I2C).
+
 El **TF-Luna** es un sensor LiDAR de un solo punto, basado en el principio ToF (Time of Flight). Utiliza una fuente de luz infrarroja de 850nm para medir distancias con alta precisión y frecuencia.
 
 ## Especificaciones Técnicas

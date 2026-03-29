@@ -1,5 +1,5 @@
 # Implementation Considerations
-<!-- Version: v1.1 -->
+<!-- Version: v2.0 -->
 
 This document records non-obvious design decisions, constraints, and the
 reasoning behind them. It is intended as a reference for future maintainers.
@@ -179,11 +179,15 @@ frequency.
 ### Context
 
 The rover has three sensing modalities physically attached to the Arduino:
-- **HC-SR04** (ultrasonic) — short range, ~2–400 cm, ±3 cm accuracy
-- **TF-Luna** (LiDAR, USART2) — medium range, 20–800 cm, ±2 cm accuracy
-- **Hall encoders** (×6, interrupts) — motor shaft rotation, stall detection
+- **HC-SR04** (ultrasonic, D38/D39) — short range, ~2–400 cm, ±3 cm accuracy
+- **VL53L0X** (ToF I2C, D42/D43 soft I2C) — short range, 3–200 cm, ±3% accuracy
+- **Hall encoders** (×6, INT0–INT5) — motor shaft rotation, stall detection
 
-In addition, the RPi5 carries a **camera** used for AI-based navigation.
+En addition, the RPi5 carries a **camera** used for AI-based navigation.
+
+> TF-Luna (USART2, D16/D17) fue descartado por no estar disponible en inventario.
+> El driver `src/sensors/tf_luna.rs` se mantiene para referencia. Ver
+> `docs/decision-log.md` §Semana 4 — Cambio de sensor TF-Luna → VL53L0X.
 
 ### The Question
 
@@ -220,14 +224,14 @@ Layer 3 — RPi5 + Camera (strategic, ~100 ms)
   Action  : sends EXP:L:R, AVD:L/R, STB commands
   Scope   : everything the camera can see
 
-Layer 2 — TF-Luna on Arduino (tactical, ~20 ms loop)
+Layer 2 — VL53L0X on Arduino (tactical, ~20 ms loop, soft I2C D42/D43)
   Purpose : detect obstacles the camera may miss (low objects, dust)
-  Action  : if dist < 40 cm while EXPLORE → force AVD locally
-  Scope   : forward arc, 20–400 cm
+  Action  : if dist < 150 mm while EXPLORE → FAULT
+  Scope   : forward arc, 3–200 cm
 
-Layer 1 — HC-SR04 on Arduino (emergency, ~20 ms loop)
+Layer 1 — HC-SR04 on Arduino (emergency, ~20 ms loop, D38/D39)
   Purpose : last-resort physical barrier protection
-  Action  : if dist < 20 cm → FAULT (hard stop, motors off)
+  Action  : if dist < 200 mm → FAULT (hard stop, motors off)
   Scope   : forward arc, < 30 cm
   Authority: overrides RPi5 commands — cannot be suppressed remotely
 ```
@@ -269,26 +273,29 @@ navigation model without giving up local safety authority.
 | Sensor | Node | Decision | Max latency |
 |---|---|---|---|
 | Camera | RPi5 | Navigation, path planning | ~150 ms |
-| TF-Luna | Arduino | Tactical avoidance | ~20 ms |
-| HC-SR04 | Arduino | Emergency hard stop | ~20 ms |
-| Encoders | Arduino | Stall → FAULT | ~20 ms |
+| VL53L0X (D42/D43) | Arduino | Tactical avoidance < 150 mm → FAULT | ~20 ms |
+| HC-SR04 (D38/D39) | Arduino | Emergency hard stop < 200 mm → FAULT | ~20 ms |
+| Encoders (INT0–INT5) | Arduino | Stall → FAULT | ~20 ms |
 
-### Current Implementation Status (v2.4)
+### Current Implementation Status (v2.7)
 
-As of `feature/msm-main-integration` (v2.4), all local safety layers are active:
+As of firmware v2.7, all local safety layers are active:
 
-- **Layer 1 — HC-SR04**: active, reads every 5 cycles (~100 ms), FAULT if < 20 cm.
-- **Layer 2 — TF-Luna**: discarded for the TFG scope; USART2 (D16/D17) remains
-  free for future integration.
+- **Layer 1 — HC-SR04**: active, reads every 5 cycles (~100 ms), FAULT if < 200 mm.
+- **Layer 2 — VL53L0X**: active, soft I2C D42/D43, FAULT si distancia < 150 mm.
+  Distancia reportada en campo `DIST` del frame TLM.
 - **Layer 3 — RPi5**: active via USART0 (USB) at 115200, full MSM protocol.
+  Cambio a USART3 (D14/D15) para producción pendiente de flash.
 - **Stall detection**: active, 6 encoders via INT0–INT5, FAULT if |speed|>20%
   and encoder frozen for >50 cycles (~1 s).
 - **Overcurrent detection**: active, 6× ACS712-30A on A0–A5, two-tier graduated
   response (see §8 for full design). Thresholds: Warn ≥1200 mA, Limit ≥1600 mA,
   Fault ≥2000 mA.
+- **Battery temperature**: active, 6× NTC en A7–A12, Warn >45°C, Limit >55°C, Fault >65°C.
+- **Timestamp TLM**: campo `tick_ms` (u32, ms desde arranque) en cada frame TLM.
 
-The TLM frame includes current readings and temperature inline (TLM extendido).
-Distance readings (HC-SR04, TF-Luna) are not yet included in the TLM frame.
+El frame TLM incluye corrientes, temperatura ambiente, temperaturas de celda
+y distancia frontal. Ver §9 para el formato completo.
 
 ---
 
@@ -565,24 +572,26 @@ de tomar `&mut Adc` directamente. Esto:
 
 ### Contexto
 
-El rover genera tres tipos de datos de estado que la RPi5 necesita recibir:
+El rover genera los siguientes datos de estado que la RPi5 necesita recibir:
 
-| Dato | Fuente | Frecuencia original |
-|------|--------|---------------------|
-| Safety + stall mask | MSM | Cada ~1 s (TLM) |
-| Corriente 6 motores | ACS712 A0–A5 | Cada ~500 ms (SEN:Ix) |
-| Temperatura | LM335 A6 | Cada ~500 ms (SEN:T) |
+| Dato | Fuente | Inclusión en TLM |
+|------|--------|-----------------|
+| Safety + stall mask | MSM | Campos 1–2 |
+| Timestamp Arduino | main loop (`elapsed_ms`) | Campo 3 |
+| Corriente 6 motores | ACS712 A0–A5 (slow tier, 500 ms) | Campos 4–9 |
+| Temperatura ambiente | LM335 A6 | Campo 10 |
+| Temperatura 6 celdas batería | NTC A7–A12 | Campos 11–16 |
+| Distancia frontal | VL53L0X D42/D43 | Campo 17 |
 
 ### Opciones evaluadas
 
-**Opción A — TLM extendido (elegida)**
+**Opción A — TLM extendido único (elegida)**
 ```
-TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C\n
-Ejemplo: TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C\n
+TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm\n
 ```
 - Un solo frame periódico, fácil de parsear en RPi5
-- Requiere ampliar `RESP_BUF` 24 → 80 bytes
-- Requiere añadir `SensorFrame` a `Response::Telemetry` en la MSM
+- Requiere `RESP_BUF` de 120 bytes
+- La `SensorFrame` vive en `state_machine` para mantenerse testeable en x86
 
 **Opción B — SEN compacto separado**
 ```
@@ -609,20 +618,33 @@ patrón de los tests nativos x86 ya existentes.
 
 ```rust
 pub struct SensorFrame {
-    pub currents: [i32; 6],  // mA por motor [FR, FL, CR, CL, RR, RL]
-    pub temp_c: i32,          // temperatura en °C
+    pub currents: [i32; 6],    // mA por motor [FR, FL, CR, CL, RR, RL]
+    pub temp_c: i32,            // temperatura ambiente en °C
+    pub cell_temps: [i32; 6],   // temperaturas celdas batería en °C [B0–B5]
+    pub dist_mm: u32,           // distancia VL53L0X en mm (0 = sin lectura)
 }
 ```
 
-### Formato final
+### Formato final (v2.7)
 
 ```
-TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C\n
-    ^────^ ^────^ ^──────────────────────────^ ^─^
-    safety stall  corrientes (mA) por motor    temp
+TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
+    ^──────^ ^─────^ ^────^ ^────────────────────────────^ ^──^ ^────────────────────────────────^ ^──────^
+    safety   stall   tick   corrientes (mA)                 temp  temperaturas celdas (°C)           dist
 ```
 
-Longitud máxima estimada: 66 bytes → `RESP_BUF = 80`.
+Ejemplo:
+```
+TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+```
+
+Longitud máxima estimada: 110 bytes → `RESP_BUF = 120`.
+
+### Decisión: timestamp relativo (v2.7)
+
+Se añadió el campo `tick_ms` (tercer campo) para cumplir SRS-020 (trazabilidad de misión).
+El contador `elapsed_ms: u32` en `main.rs` usa `wrapping_add(LOOP_MS)` cada ciclo.
+Overflow a ~49 días — dentro del margen de la misión. Ver `decision-log.md` §Semana 4.
 
 ---
 

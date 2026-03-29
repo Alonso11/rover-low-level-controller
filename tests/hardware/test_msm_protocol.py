@@ -2,22 +2,25 @@
 """
 test_msm_protocol.py — Verificación del protocolo MSM desde PC via USB
 =======================================================================
-Version: v2.0
+Version: v2.1
+
+Cambios v2.1:
+  - Actualizado TLM_PATTERN al formato v2.7 completo:
+      TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
+    Añadidos: tick_ms, 6 temperaturas NTC de celdas (B0–B5), distancia VL53L0X.
 
 Cambios v2.0:
   - Soporte para el formato TLM extendido con sensores:
       TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C
-    donde I0-I5 son corrientes en mA (ACS712-30A, A0-A5) y T es
-    temperatura en °C (LM335, A6).
   - Añadido helper read_tlm() y test de formato TLM (#13).
 
 Requisitos:
   - Arduino Mega 2560 conectado via USB (/dev/ttyUSB0 por defecto)
-  - Firmware flasheado (rama actual, no feature/msm-main-integration)
+  - Firmware v2.7+ flasheado (feature/msm-main-integration)
   - pip install pyserial
 
 Uso:
-  python3 tests/test_msm_protocol.py [/dev/ttyUSBx]
+  python3 tests/hardware/test_msm_protocol.py [/dev/ttyUSBx]
 
 Contexto:
   Este script verifica el protocolo ASCII MSM implementado en
@@ -37,12 +40,18 @@ BAUD     = 115200
 TIMEOUT  = 3.0   # segundos
 BOOT_WAIT = 2.0  # espera tras reset por DTR
 
-# Formato TLM:  TLM:<SAFETY>:<STALL6>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C
-# Ejemplo:      TLM:NORMAL:000000:0:0:0:0:0:0:24C
+# Formato TLM v2.7:
+#   TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
+# Ejemplo:
+#   TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
 TLM_PATTERN = re.compile(
-    r"^TLM:(NORMAL|WARN|FAULT):[01]{6}:"   # safety + stall mask
-    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):"  # corrientes I0-I5
-    r"(-?\d+)C$"                            # temperatura
+    r"^TLM:(NORMAL|WARN|LIMIT|FAULT):"     # safety state
+    r"([01]{6}):"                           # stall mask 6 bits
+    r"(\d+)ms:"                             # tick_ms (timestamp Arduino)
+    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):"  # corrientes I0-I5 (mA)
+    r"(-?\d+)C:"                            # temperatura ambiente LM335 (°C)
+    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+)C:"  # NTC celdas B0-B5 (°C)
+    r"(\d+)mm$"                             # distancia VL53L0X (mm)
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -159,11 +168,9 @@ def main():
     resp = send(s, b"FOOBAR\n")
     if check("FOOBAR → ERR:UNKNOWN", resp, "ERR:UNKNOWN"): passed += 1
 
-    # 13. Formato TLM extendido con sensores
-    #     Tras STB, el loop envía TLM periódicamente.
-    #     Verificamos que el frame tenga el formato correcto:
-    #       TLM:<SAFETY>:<STALL6>:<I0>:...:<I5>:<T>C
-    print("\n--- Test TLM extendido ---")
+    # 13. Formato TLM v2.7 completo
+    #     TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
+    print("\n--- Test TLM v2.7 ---")
     total += 1
     send(s, b"RST\n")   # aseguramos STANDBY
     time.sleep(0.1)
@@ -174,19 +181,26 @@ def main():
         m = TLM_PATTERN.match(tlm)
         if m:
             print(f"  [PASS] {'TLM formato OK':20s}  got={tlm!r}")
-            currents = [int(m.group(i)) for i in range(3, 9)]
-            temp     = int(m.group(9))
+            tick_ms   = int(m.group(3))
+            currents  = [int(m.group(i)) for i in range(4, 10)]
+            temp_amb  = int(m.group(10))
+            cell_temps = [int(m.group(i)) for i in range(11, 17)]
+            dist_mm    = int(m.group(17))
             # Rangos físicos razonables (sin hardware puede dar 0)
-            current_ok = all(-30000 <= c <= 30000 for c in currents)
-            temp_ok    = -40 <= temp <= 125
-            if not current_ok:
+            if not all(-30000 <= c <= 30000 for c in currents):
                 print(f"  [WARN] Corrientes fuera de rango: {currents}")
-            if not temp_ok:
-                print(f"  [WARN] Temperatura fuera de rango: {temp} C")
+            if not -40 <= temp_amb <= 125:
+                print(f"  [WARN] Temp ambiente fuera de rango: {temp_amb} C")
+            if not all(-40 <= t <= 125 for t in cell_temps):
+                print(f"  [WARN] Temp celdas fuera de rango: {cell_temps}")
+            if not 0 <= dist_mm <= 2000:
+                print(f"  [WARN] Distancia fuera de rango: {dist_mm} mm")
+            if tick_ms == 0:
+                print(f"  [WARN] tick_ms=0 (firmware recién arrancado, normal)")
             passed += 1
         else:
             print(f"  [FAIL] {'TLM formato':20s}  got={tlm!r}")
-            print(f"         Esperado: TLM:<SAFETY>:<STALL6>:<I0>:...:<I5>:<T>C")
+            print(f"         Esperado: TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm")
     else:
         print(f"  [FAIL] {'TLM no recibido':20s}  (timeout esperando TLM:)")
 

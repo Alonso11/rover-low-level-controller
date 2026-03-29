@@ -1,4 +1,4 @@
-<!-- Version: v1.3 -->
+<!-- Version: v1.4 -->
 # Motor Control Architecture (Rover)
 
 This document describes the motor control architecture for a 6-wheel chassis
@@ -67,14 +67,14 @@ both the main loop and ISR context.
 | :--- | :--- | :--- | :--- |
 | Front Right  | D21 | INT0 (PD0) | None |
 | Front Left   | D20 | INT1 (PD1) | None |
-| Center Right | D19 | INT2 (PD2) | Shared with USART1 RX (Serial1 / RPi link) |
-| Center Left  | D18 | INT3 (PD3) | Shared with USART1 TX (Serial1 / RPi link) |
-| Rear Right   | D2  | INT4 (PE4) | Shared with Timer3 OC3B (center-left motor PWM) |
+| Center Right | D19 | INT2 (PD2) | None — RPi link moved to USART3 (D14/D15) |
+| Center Left  | D18 | INT3 (PD3) | None — RPi link moved to USART3 (D14/D15) |
+| Rear Right   | D2  | INT4 (PE4) | None |
 | Rear Left    | D3  | INT5 (PE5) | None |
 
-> **D18 / D19** are the USART1 lines used to communicate with the RPi.
-> Using INT2/INT3 for encoders on those pins requires moving the RPi link
-> to a different USART (e.g. Serial2 on D16/D17).
+> D18/D19 (INT3/INT2) quedan libres porque la RPi5 usa **USART3** (D14/D15),
+> no USART1. Ver `docs/consideration_implementation.md` §6 y
+> `docs/rpi5_uart_communication.md` §3 para el razonamiento completo.
 
 ## 4. Software Requirements
 
