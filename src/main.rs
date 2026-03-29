@@ -1,4 +1,4 @@
-// Version: v2.7
+// Version: v2.8
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -40,7 +40,7 @@ use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuff
 use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
@@ -51,7 +51,7 @@ use rover_low_level_controller::state_machine::{
 
 const TLM_PERIOD: u8    = 50;  // ciclos entre telemetría (~1 s a 20 ms/ciclo)
 const LOOP_MS: u32      = 20;
-const RESP_BUF: usize   = 128; // TLM extendido: TLM:NORMAL:000000:±30000×6:±100C:±100×6C\n ≈ 110 bytes
+const RESP_BUF: usize   = 160; // TLM extendido: ...±36000mV:±32768mA:±30000×6:±100C:±100×6C:8189mm ≈ 140 bytes
 
 /// Cada cuántos ciclos leer el HC-SR04 (~100 ms).
 /// El driver es bloqueante; ver consideration_implementation.md §5.
@@ -122,6 +122,11 @@ const LIMIT_SPEED_CAP: i16 = 60;
 const BATT_WARN_C:  i32 = 45; // operación prolongada a alta carga
 const BATT_LIMIT_C: i32 = 55; // reducir carga
 const BATT_FAULT_C: i32 = 65; // detener rover — peligro inmediato
+
+/// Resistencia de shunt del INA226 en mΩ.
+/// Ajustar según el componente instalado: 10 mΩ = 0.01 Ω.
+/// Calibrar antes de confiar en las lecturas de corriente.
+const INA226_SHUNT_MOHM: u16 = 10;
 
 /// Número de muestras ADC a promediar por canal.
 /// El ATmega2560 tiene un solo ADC multiplexado: cada muestra toma ~104 µs.
@@ -291,6 +296,12 @@ fn main() -> ! {
         tof.start_continuous();
     }
 
+    // ── INA226 — D42(SDA/PL7), D43(SCL/PL6), dirección 0x40 ────────────────
+    // Comparte el bus soft I2C con VL53L0X (0x29). Sin conflicto de dirección.
+    // Requiere shunt externo de INA226_SHUNT_MOHM mΩ en serie con la batería.
+    let mut ina = INA226::new();
+    ina.init(INA226_SHUNT_MOHM);
+
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
     // ACS712 (corriente):         A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
     // LM335  (temp. ambiente):    A6
@@ -353,7 +364,7 @@ fn main() -> ! {
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
 
-    iface.log("=== ROVER OLYMPUS v2.7 — MSM + HC-SR04 + VL53L0X + ENCODERS + ACS712 + LM335 + NTC ===");
+    iface.log("=== ROVER OLYMPUS v2.8 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -518,6 +529,12 @@ fn main() -> ! {
 
             let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
             sensor_frame.temp_c = lm335.read_celsius(raw_t);
+
+            // INA226 — tensión y corriente total de batería
+            if ina.ready {
+                sensor_frame.batt_mv = ina.read_bus_mv();
+                sensor_frame.batt_ma = ina.read_current_ma();
+            }
 
             // Leer 6 sensores NTC de batería y clasificar el peor nivel térmico.
             let raw_batt = [

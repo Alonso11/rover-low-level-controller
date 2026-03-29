@@ -72,6 +72,10 @@ impl DriveOutput {
 pub struct SensorFrame {
     /// Tiempo relativo desde el arranque en ms (contador u32, overflow a ~49 días).
     pub tick_ms: u32,
+    /// Tensión del bus de batería en mV (INA226, D42/D43). 0 = sin lectura.
+    pub batt_mv: u16,
+    /// Corriente total de batería en mA con signo (INA226). 0 = sin lectura.
+    pub batt_ma: i32,
     /// Corriente en mA por motor: [FR, FL, CR, CL, RR, RL].
     pub currents: [i32; 6],
     /// Temperatura ambiente en °C (LM335, A6).
@@ -85,7 +89,15 @@ pub struct SensorFrame {
 
 impl SensorFrame {
     /// Frame vacío para inicialización (cero en todo).
-    pub const ZERO: Self = Self { tick_ms: 0, currents: [0; 6], temp_c: 0, batt_temps: [0; 6], dist_mm: 0 };
+    pub const ZERO: Self = Self {
+        tick_ms: 0,
+        batt_mv: 0,
+        batt_ma: 0,
+        currents: [0; 6],
+        temp_c: 0,
+        batt_temps: [0; 6],
+        dist_mm: 0,
+    };
 }
 
 /// Respuesta a enviar de vuelta a la RPi5.
@@ -336,16 +348,18 @@ fn format_ack<'a>(buf: &'a mut [u8], label: &[u8]) -> &'a [u8] {
     &buf[..i]
 }
 
-/// `TLM:<SAFETY>:<STALL_MASK>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n`
+/// `TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n`
 ///
-/// - STALL_MASK: 6 bits '0'/'1', bit5..bit0 (motor5..motor0)
+/// - STALL: 6 bits '0'/'1', bit5..bit0 (motor5..motor0)
 /// - TS: tiempo relativo desde arranque en ms (u32, contador monotónico)
-/// - I0–I5: corriente en mA por motor (puede ser negativa)
+/// - MV: tensión bus batería en mV (INA226). 0 = sin lectura.
+/// - MA: corriente total batería en mA con signo (INA226). 0 = sin lectura.
+/// - I0–I5: corriente en mA por motor (ACS712, puede ser negativa)
 /// - T: temperatura ambiente en °C (LM335)
 /// - B0–B5: temperatura en °C por sensor NTC de batería [B1a,B1b,B2a,B2b,B3a,B3b]
-/// - DIST: distancia en mm (VL53L0X ToF, D42/D43). 0 = sin lectura disponible.
+/// - DIST: distancia en mm (VL53L0X ToF). 0 = sin lectura disponible.
 ///
-/// `buf` debe tener al menos 128 bytes.
+/// `buf` debe tener al menos 160 bytes.
 fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensors: SensorFrame) -> &'a [u8] {
     let safety_label: &[u8] = match safety {
         SafetyState::Normal     => b"NORMAL",
@@ -365,6 +379,14 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensor
     write_u32(sensors.tick_ms, buf, &mut i);
     buf[i] = b'm'; i += 1;
     buf[i] = b's'; i += 1;
+    buf[i] = b':'; i += 1;
+    write_u32(sensors.batt_mv as u32, buf, &mut i);
+    buf[i] = b'm'; i += 1;
+    buf[i] = b'V'; i += 1;
+    buf[i] = b':'; i += 1;
+    write_i32(sensors.batt_ma, buf, &mut i);
+    buf[i] = b'm'; i += 1;
+    buf[i] = b'A'; i += 1;
     for current in &sensors.currents {
         buf[i] = b':'; i += 1;
         write_i32(*current, buf, &mut i);

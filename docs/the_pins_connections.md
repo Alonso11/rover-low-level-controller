@@ -100,6 +100,29 @@ Detección de obstáculos y navegación autónoma.
 > TF-Luna (USART2, D16/D17): componente reservado; driver `tf_luna.rs` mantenido pero
 > no instanciado. Ver `docs/decision-log.md` §Semana 4.
 
+### 7b. Monitor de Potencia (INA226) — Bus compartido D42/D43
+
+Mide tensión y corriente total del pack de baterías. Comparte el bus soft I2C con el VL53L0X sin conflicto de dirección.
+
+**Módulo:** [INA226 – componenteselectronicoscr.com](https://componenteselectronicoscr.com/product/monitor-de-derivacion-de-corriente-y-potencia-con-inter)
+
+| Señal INA226 | Pin Arduino | Registro | Función | Notas |
+| :--- | :--- | :--- | :--- | :--- |
+| **SDA** | **D42** | PL7 | I2C Data | Compartido con VL53L0X |
+| **SCL** | **D43** | PL6 | I2C Clock | Compartido con VL53L0X |
+| **VBUS** | — | — | Entrada voltaje bus | Conectar al + de batería (hasta 36 V) |
+| **IN+** | — | — | Terminal + shunt | En serie con la carga, lado batería |
+| **IN−** | — | — | Terminal − shunt | En serie con la carga, lado motores |
+| **A0** | **GND** | — | Selección dirección | A0=GND → dirección 0x40 |
+| **A1** | **GND** | — | Selección dirección | A1=GND → dirección 0x40 |
+| **VCC** | **3.3V / 5V** | — | Alimentación lógica | 2.7–5.5 V |
+| **GND** | **GND** | GND | Tierra común | GND común con Arduino |
+
+> **Shunt externo requerido:** el módulo no incluye shunt. Usar resistencia de **10 mΩ / 5 W**
+> (0.01 Ω) para corrientes de hasta ~10 A. Constante `INA226_SHUNT_MOHM = 10` en `main.rs`.
+> Con shunt de 100 mΩ reducir `INA226_SHUNT_MOHM` a 100 y verificar potencia máxima: P = I² × R.
+> Dirección 0x40 no colisiona con VL53L0X (0x29). ADC 16-bit, ±0.1% de precisión.
+
 ### 8. Sensores Analógicos (Corriente y Temperatura)
 
 | Sensor | Pin Arduino | Registro | Función | Notas |
