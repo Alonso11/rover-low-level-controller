@@ -1,9 +1,9 @@
-// Version: v1.0
-// Pruebas unitarias de los drivers analógicos ACS712 y LM335.
+// Version: v1.1
+// Pruebas unitarias de los drivers analógicos ACS712, LM335 y NTCThermistor.
 // Se ejecutan en PC sin necesidad del Arduino.
 // Comando: ./test_native.sh  (o ver test_native.sh para el comando completo)
 
-use rover_low_level_controller::sensors::{ACS712, LM335};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor};
 
 // ─── ACS712-30A ───────────────────────────────────────────────────────────────
 
@@ -194,4 +194,125 @@ fn test_lm335_zero_offset_unchanged() {
     let lm_default = LM335::new();
     let lm_zero    = LM335::with_offset(0);
     assert_eq!(lm_default.read_celsius(610), lm_zero.read_celsius(610));
+}
+
+// ─── NTCThermistor — AD36958 (B=3950, R25=10kΩ, Rpull=10kΩ) ─────────────────
+
+#[test]
+fn test_ntc_at_25c() {
+    // ADC 512 → punto exacto de la tabla → 25 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(512);
+    assert!((t - 25).abs() <= 1, "esperado ~25 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_at_0c() {
+    // ADC 787 → punto exacto de la tabla → 0 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(787);
+    assert!((t - 0).abs() <= 1, "esperado ~0 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_at_50c() {
+    // ADC 268 → punto exacto de la tabla → 50 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(268);
+    assert!((t - 50).abs() <= 1, "esperado ~50 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_at_100c() {
+    // ADC 66 → punto exacto de la tabla → 100 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(66);
+    assert!((t - 100).abs() <= 1, "esperado ~100 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_interpolation() {
+    // ADC 480 está entre 512 (25 °C) y 454 (30 °C)
+    // t = 25 + (30-25)*(512-480)/(512-454) = 25 + 5*32/58 = 25+2 = 27 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(480);
+    assert!((t - 27).abs() <= 1, "esperado ~27 °C interpolado, got {}", t);
+}
+
+#[test]
+fn test_ntc_saturation_cold() {
+    // ADC muy alto (encima del primer punto) → temperatura mínima: −20 °C
+    let ntc = NTCThermistor::new();
+    assert_eq!(ntc.read_celsius(1023), -20);
+    assert_eq!(ntc.read_celsius(934),  -20); // justo en el primer punto
+}
+
+#[test]
+fn test_ntc_saturation_hot() {
+    // ADC muy bajo (debajo del último punto) → temperatura máxima: 100 °C
+    let ntc = NTCThermistor::new();
+    assert_eq!(ntc.read_celsius(0),  100);
+    assert_eq!(ntc.read_celsius(66), 100); // justo en el último punto
+}
+
+#[test]
+fn test_ntc_with_offset_positive() {
+    // ADC 512 → 25 °C sin offset; con offset +3 → 28 °C
+    let ntc = NTCThermistor::with_offset(3);
+    let t = ntc.read_celsius(512);
+    assert!((t - 28).abs() <= 1, "esperado ~28 °C con offset +3, got {}", t);
+}
+
+#[test]
+fn test_ntc_with_offset_negative() {
+    // Con offset −3 → 22 °C
+    let ntc = NTCThermistor::with_offset(-3);
+    let t = ntc.read_celsius(512);
+    assert!((t - 22).abs() <= 1, "esperado ~22 °C con offset -3, got {}", t);
+}
+
+#[test]
+fn test_ntc_calibrate_builder() {
+    // calibrate() debe producir el mismo resultado que with_offset()
+    let a = NTCThermistor::new().calibrate(5);
+    let b = NTCThermistor::with_offset(5);
+    assert_eq!(a.read_celsius(512), b.read_celsius(512));
+}
+
+#[test]
+fn test_ntc_is_overtemp_true() {
+    let ntc = NTCThermistor::new();
+    assert!(ntc.is_overtemp(46, 45));
+}
+
+#[test]
+fn test_ntc_is_overtemp_false() {
+    let ntc = NTCThermistor::new();
+    assert!(!ntc.is_overtemp(44, 45));
+}
+
+#[test]
+fn test_ntc_is_overtemp_boundary() {
+    // Exactamente en el umbral no es sobretemperatura (> no >=)
+    let ntc = NTCThermistor::new();
+    assert!(!ntc.is_overtemp(45, 45));
+}
+
+#[test]
+fn test_ntc_temp_increases_as_adc_decreases() {
+    // Propiedad fundamental: ADC menor → temperatura mayor
+    let ntc = NTCThermistor::new();
+    assert!(ntc.read_celsius(300) > ntc.read_celsius(500));
+}
+
+#[test]
+fn test_ntc_batt_thresholds_order() {
+    // Verificar que los umbrales de batería tienen sentido (Warn < Limit < Fault)
+    // Los ADC correspondientes: Warn=45°C→308, Limit=55°C→~233, Fault=65°C→~175
+    let ntc = NTCThermistor::new();
+    let warn_t  = ntc.read_celsius(308); // ~45 °C
+    let limit_t = ntc.read_celsius(233); // ~55 °C
+    let fault_t = ntc.read_celsius(175); // ~65 °C
+    assert!(warn_t < limit_t, "Warn debe ser < Limit");
+    assert!(limit_t < fault_t, "Limit debe ser < Fault");
 }

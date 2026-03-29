@@ -1,18 +1,22 @@
-// Version: v1.1
+// Version: v1.3
 //! Test básico del driver BTS7960 (IBT-2).
 //!
 //! ## Conexiones
 //!
-//! | IBT-2 | Arduino Mega |
-//! |-------|--------------|
-//! | RPWM  | D9  (OC2B)   |
-//! | LPWM  | D10 (OC2A)   |
-//! | R_EN  | D22          |
-//! | L_EN  | D23          |
-//! | VCC   | 5V           |
-//! | GND   | GND          |
-//! | B+/B- | Batería      |
-//! | M+/M- | Motor        |
+//! | IBT-2 | Arduino Mega | Registro |
+//! |-------|--------------|----------|
+//! | RPWM  | D9  (OC2B)   | PH6      |
+//! | LPWM  | D10 (OC2A)   | PB4      |
+//! | R_EN  | D40          | PG1      |
+//! | L_EN  | D41          | PG0      |
+//! | VCC   | 5V           | —        |
+//! | GND   | GND          | GND      |
+//! | B+/B- | Batería      | —        |
+//! | M+/M- | Motor        | —        |
+//!
+//! R_EN/L_EN usan D40/D41 (PG1/PG0) para evitar conflicto con D22/D23,
+//! que están reservados para IN1/IN2 del motor Front Right (L298N) en
+//! la configuración de 6 ruedas (`main.rs`).
 
 #![no_std]
 #![no_main]
@@ -31,8 +35,8 @@ fn main() -> ! {
 
     let rpwm = pins.d9.into_output().into_pwm(&mut timer2);
     let lpwm = pins.d10.into_output().into_pwm(&mut timer2);
-    let r_en = pins.d22.into_output();
-    let l_en = pins.d23.into_output();
+    let r_en = pins.d40.into_output();
+    let l_en = pins.d41.into_output();
 
     let mut motor = BTS7960Motor::new(rpwm, lpwm, r_en, l_en, false);
 

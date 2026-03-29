@@ -1,4 +1,4 @@
-// Version: v2.4
+// Version: v2.5
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -39,7 +39,7 @@ use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuff
 use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
-use rover_low_level_controller::sensors::{ACS712, LM335};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
@@ -50,7 +50,7 @@ use rover_low_level_controller::state_machine::{
 
 const TLM_PERIOD: u8    = 50;  // ciclos entre telemetría (~1 s a 20 ms/ciclo)
 const LOOP_MS: u32      = 20;
-const RESP_BUF: usize   = 80; // TLM extendido: TLM:NORMAL:000000:±30000×6:±273C\n ≈ 66 bytes
+const RESP_BUF: usize   = 128; // TLM extendido: TLM:NORMAL:000000:±30000×6:±100C:±100×6C\n ≈ 110 bytes
 
 /// Cada cuántos ciclos leer el HC-SR04 (~100 ms).
 /// El driver es bloqueante; ver consideration_implementation.md §5.
@@ -111,6 +111,12 @@ const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
 
 /// Velocidad máxima (%) aplicada a todos los motores cuando safety == Limit.
 const LIMIT_SPEED_CAP: i16 = 60;
+
+/// Umbrales de temperatura de batería 18650 en °C.
+/// Thermal runaway inicia ~80–90 °C; márgenes conservadores.
+const BATT_WARN_C:  i32 = 45; // operación prolongada a alta carga
+const BATT_LIMIT_C: i32 = 55; // reducir carga
+const BATT_FAULT_C: i32 = 65; // detener rover — peligro inmediato
 
 /// Número de muestras ADC a promediar por canal.
 /// El ATmega2560 tiene un solo ADC multiplexado: cada muestra toma ~104 µs.
@@ -272,16 +278,23 @@ fn main() -> ! {
     );
 
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
-    // ACS712-30A (corriente): A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
-    // LM335 (temperatura):    A6
-    let mut adc    = arduino_hal::Adc::new(dp.ADC, Default::default());
-    let acs_fr_pin = pins.a0.into_analog_input(&mut adc);
-    let acs_fl_pin = pins.a1.into_analog_input(&mut adc);
-    let acs_cr_pin = pins.a2.into_analog_input(&mut adc);
-    let acs_cl_pin = pins.a3.into_analog_input(&mut adc);
-    let acs_rr_pin = pins.a4.into_analog_input(&mut adc);
-    let acs_rl_pin = pins.a5.into_analog_input(&mut adc);
-    let lm335_pin  = pins.a6.into_analog_input(&mut adc);
+    // ACS712 (corriente):         A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
+    // LM335  (temp. ambiente):    A6
+    // NTC    (temp. baterías):    A7=B1a A8=B1b A9=B2a A10=B2b A11=B3a A12=B3b
+    let mut adc     = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let acs_fr_pin  = pins.a0.into_analog_input(&mut adc);
+    let acs_fl_pin  = pins.a1.into_analog_input(&mut adc);
+    let acs_cr_pin  = pins.a2.into_analog_input(&mut adc);
+    let acs_cl_pin  = pins.a3.into_analog_input(&mut adc);
+    let acs_rr_pin  = pins.a4.into_analog_input(&mut adc);
+    let acs_rl_pin  = pins.a5.into_analog_input(&mut adc);
+    let lm335_pin   = pins.a6.into_analog_input(&mut adc);
+    let ntc_b1a_pin = pins.a7.into_analog_input(&mut adc);   // Banco 1 — sensor A
+    let ntc_b1b_pin = pins.a8.into_analog_input(&mut adc);   // Banco 1 — sensor B
+    let ntc_b2a_pin = pins.a9.into_analog_input(&mut adc);   // Banco 2 — sensor A
+    let ntc_b2b_pin = pins.a10.into_analog_input(&mut adc);  // Banco 2 — sensor B
+    let ntc_b3a_pin = pins.a11.into_analog_input(&mut adc);  // Banco 3 — sensor A
+    let ntc_b3b_pin = pins.a12.into_analog_input(&mut adc);  // Banco 3 — sensor B
 
     // Instancias ACS712 por motor [FR, FL, CR, CL, RR, RL].
     // La variante (05A/30A) se elige en compilación según el feature activo.
@@ -298,6 +311,10 @@ fn main() -> ! {
     let acs: [ACS712; 6] = [ACS712::new_05a(); 6]; // all-l298n (default)
 
     let lm335 = LM335::new(); // offset 0 K — ajustar con with_offset si es necesario
+
+    // Instancias NTC por sensor de batería [B1a, B1b, B2a, B2b, B3a, B3b].
+    // offset 0 — calibrar con .calibrate(offset_c) tras verificación en hardware.
+    let ntc_batt: [NTCThermistor; 6] = [NTCThermistor::new(); 6];
 
     // ── Interrupciones externas INT0–INT5 (rising edge) ──────────────────────
     // EICRA: controla INT0–INT3 (ISCn1=1, ISCn0=1 → rising edge)
@@ -321,7 +338,7 @@ fn main() -> ! {
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
 
-    iface.log("=== ROVER OLYMPUS v2.4 — MSM + HC-SR04 + ENCODERS + ACS712 + LM335 ===");
+    iface.log("=== ROVER OLYMPUS v2.5 — MSM + HC-SR04 + ENCODERS + ACS712 + LM335 + NTC ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -474,6 +491,30 @@ fn main() -> ! {
 
             let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
             sensor_frame.temp_c = lm335.read_celsius(raw_t);
+
+            // Leer 6 sensores NTC de batería y clasificar el peor nivel térmico.
+            let raw_batt = [
+                adc_avg!(ntc_b1a_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b1b_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b2a_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b2b_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b3a_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b3b_pin, adc, SEN_SAMPLES),
+            ];
+            for i in 0..6usize {
+                let t = ntc_batt[i].read_celsius(raw_batt[i]);
+                sensor_frame.batt_temps[i] = t;
+                let level = if t > BATT_FAULT_C {
+                    SafetyState::FaultStall
+                } else if t > BATT_LIMIT_C {
+                    SafetyState::Limit
+                } else if t > BATT_WARN_C {
+                    SafetyState::Warn
+                } else {
+                    SafetyState::Normal
+                };
+                if level > worst { worst = level; }
+            }
 
             let prev_safety = msm.safety;
             let faulted = msm.update_overcurrent(worst);

@@ -1,6 +1,6 @@
-// Version: v1.0
+// Version: v1.1
 //! # Módulo de Sensores
-//! 
+//!
 //! Este módulo contiene las implementaciones para los diferentes sensores del Rover,
 //! como encoders, sensores de proximidad, IMU, etc.
 
@@ -9,9 +9,12 @@
 pub mod acs712;
 /// Módulo para el sensor de temperatura LM335
 pub mod lm335;
+/// Módulo para el módulo termistor NTC AD36958 (B=3950, 10kΩ)
+pub mod ntc_thermistor;
 
 pub use acs712::ACS712;
 pub use lm335::LM335;
+pub use ntc_thermistor::NTCThermistor;
 
 // ── Drivers con dependencia de arduino-hal — solo con feature "avr" ──────────
 /// Módulo para encoders de posición (Efecto Hall)

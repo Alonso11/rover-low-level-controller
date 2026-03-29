@@ -28,8 +28,8 @@ Layout integrado compatible con encoders, servo y todos los sensores.
 
 | Motor | PWM Pin | Puerto | Timer/Canal | IN1 | IN2 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Front Right** | **D9**  | PH6 | Timer2/OC2B | D22 | D23 |
-| **Front Left**  | **D10** | PB4 | Timer2/OC2A | D24 | D25 |
+| **Front Right** | **D9**  | PH6 | Timer2/OC2B | D23 | D25 |
+| **Front Left**  | **D10** | PB4 | Timer2/OC2A | D22 | D24 |
 | *(separador)*   | —       | —   | —           | **D26** | **D27** |
 | **Center Right**| **D5**  | PE3 | Timer3/OC3A | D28 | D29 |
 | **Center Left** | **D6**  | PH3 | Timer4/OC4A | D30 | D31 |
@@ -44,10 +44,14 @@ Control PWM dual para motores de alta corriente.
 | :--- | :--- | :--- | :--- | :--- |
 | **RPWM** | **D9** | PH6 | Forward PWM | Timer 2 (8-bit) |
 | **LPWM** | **D10** | PB4 | Backward PWM | Timer 2 (8-bit) |
-| **R_EN** | **D22** | PA0 | Right Enable | Conectar a 5V o pin digital |
-| **L_EN** | **D23** | PA1 | Left Enable | Conectar a 5V o pin digital |
+| **R_EN** | **D40** | PG1 | Right Enable | Pin libre, compatible con config 6-ruedas |
+| **L_EN** | **D41** | PG0 | Left Enable | Pin libre, compatible con config 6-ruedas |
 | **VCC** | **5V** | - | Lógica Power | Alimentación chip driver |
 | **GND** | **GND** | GND | Ground | Tierra común |
+
+> D40/D41 (PG1/PG0) se eligieron porque D22/D23 están reservados para IN1/IN2
+> del motor Front Right (§3). Esta asignación es compatible con la configuración
+> de 6 ruedas y con el feature `mixed-drivers`.
 
 ### 5. Puente-H Estándar (L298N — 1 Driver, 2 Motores)
 Ejemplo de prueba con un solo driver (`examples/test_l298n.rs`).
@@ -93,12 +97,23 @@ Detección de obstáculos y navegación autónoma.
 
 | Sensor | Pin Arduino | Registro | Función | Notas |
 | :--- | :--- | :--- | :--- | :--- |
-| **ACS712 FR (OUT)**  | **A0** | PF0 | ADC canal 0 | Corriente motor Front Right  |
-| **ACS712 FL (OUT)**  | **A1** | PF1 | ADC canal 1 | Corriente motor Front Left   |
-| **ACS712 CR (OUT)**  | **A2** | PF2 | ADC canal 2 | Corriente motor Center Right |
-| **ACS712 CL (OUT)**  | **A3** | PF3 | ADC canal 3 | Corriente motor Center Left  |
-| **ACS712 RR (OUT)**  | **A4** | PF4 | ADC canal 4 | Corriente motor Rear Right   |
-| **ACS712 RL (OUT)**  | **A5** | PF5 | ADC canal 5 | Corriente motor Rear Left    |
-| **LM335 (OUT)**      | **A6** | PF6 | ADC canal 6 | Temperatura, 10 mV/K, R_bias 2kΩ a 5V |
-| **VCC** | **5V** | - | Power | Ambos sensores alimentados a 5V |
+| **ACS712 FR (OUT)**  | **A0** | PF0 | ADC canal 0  | Corriente motor Front Right  |
+| **ACS712 FL (OUT)**  | **A1** | PF1 | ADC canal 1  | Corriente motor Front Left   |
+| **ACS712 CR (OUT)**  | **A2** | PF2 | ADC canal 2  | Corriente motor Center Right |
+| **ACS712 CL (OUT)**  | **A3** | PF3 | ADC canal 3  | Corriente motor Center Left  |
+| **ACS712 RR (OUT)**  | **A4** | PF4 | ADC canal 4  | Corriente motor Rear Right   |
+| **ACS712 RL (OUT)**  | **A5** | PF5 | ADC canal 5  | Corriente motor Rear Left    |
+| **LM335 (OUT)**      | **A6** | PF6 | ADC canal 6  | Temp. ambiente, 10 mV/K, R_bias 2kΩ a 5V |
+| **NTC Banco1-A (AO)**| **A7** | PF7 | ADC canal 7  | Temp. batería 18650 banco 1, sensor A |
+| **NTC Banco1-B (AO)**| **A8** | PK0 | ADC canal 8  | Temp. batería 18650 banco 1, sensor B |
+| **NTC Banco2-A (AO)**| **A9** | PK1 | ADC canal 9  | Temp. batería 18650 banco 2, sensor A |
+| **NTC Banco2-B (AO)**| **A10**| PK2 | ADC canal 10 | Temp. batería 18650 banco 2, sensor B |
+| **NTC Banco3-A (AO)**| **A11**| PK3 | ADC canal 11 | Temp. batería 18650 banco 3, sensor A |
+| **NTC Banco3-B (AO)**| **A12**| PK4 | ADC canal 12 | Temp. batería 18650 banco 3, sensor B |
+| **VCC** | **5V** | - | Power | Todos los sensores alimentados a 5V |
 | **GND** | **GND** | GND | Ground | Tierra común |
+
+> Módulo NTC: AD36958 — LM393 + NTC 10 kΩ (B=3950). Pull-up de 10 kΩ integrado en la placa.
+> Thresholds en firmware: Warn >45 °C · Limit >55 °C · Fault >65 °C (thermal runaway 18650 ~80–90 °C).
+> La salida DO del LM393 queda sin conectar en esta revisión (umbral ajustable por potenciómetro,
+> no controlable por software sin recalibrar físicamente).
