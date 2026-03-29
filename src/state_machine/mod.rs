@@ -70,6 +70,8 @@ impl DriveOutput {
 /// Datos de sensores analógicos incluidos en el frame TLM extendido.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct SensorFrame {
+    /// Tiempo relativo desde el arranque en ms (contador u32, overflow a ~49 días).
+    pub tick_ms: u32,
     /// Corriente en mA por motor: [FR, FL, CR, CL, RR, RL].
     pub currents: [i32; 6],
     /// Temperatura ambiente en °C (LM335, A6).
@@ -83,7 +85,7 @@ pub struct SensorFrame {
 
 impl SensorFrame {
     /// Frame vacío para inicialización (cero en todo).
-    pub const ZERO: Self = Self { currents: [0; 6], temp_c: 0, batt_temps: [0; 6], dist_mm: 0 };
+    pub const ZERO: Self = Self { tick_ms: 0, currents: [0; 6], temp_c: 0, batt_temps: [0; 6], dist_mm: 0 };
 }
 
 /// Respuesta a enviar de vuelta a la RPi5.
@@ -334,9 +336,10 @@ fn format_ack<'a>(buf: &'a mut [u8], label: &[u8]) -> &'a [u8] {
     &buf[..i]
 }
 
-/// `TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n`
+/// `TLM:<SAFETY>:<STALL_MASK>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n`
 ///
 /// - STALL_MASK: 6 bits '0'/'1', bit5..bit0 (motor5..motor0)
+/// - TS: tiempo relativo desde arranque en ms (u32, contador monotónico)
 /// - I0–I5: corriente en mA por motor (puede ser negativa)
 /// - T: temperatura ambiente en °C (LM335)
 /// - B0–B5: temperatura en °C por sensor NTC de batería [B1a,B1b,B2a,B2b,B3a,B3b]
@@ -358,6 +361,10 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensor
         buf[i] = if (stall_mask >> bit) & 1 == 1 { b'1' } else { b'0' };
         i += 1;
     }
+    buf[i] = b':'; i += 1;
+    write_u32(sensors.tick_ms, buf, &mut i);
+    buf[i] = b'm'; i += 1;
+    buf[i] = b's'; i += 1;
     for current in &sensors.currents {
         buf[i] = b':'; i += 1;
         write_i32(*current, buf, &mut i);
@@ -376,6 +383,28 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensor
     buf[i] = b'm'; i += 1;
     buf[i] = b'\n'; i += 1;
     &buf[..i]
+}
+
+/// Escribe un u32 como dígitos ASCII en buf[pos..]. Avanza pos.
+fn write_u32(val: u32, buf: &mut [u8], pos: &mut usize) {
+    if val == 0 {
+        buf[*pos] = b'0';
+        *pos += 1;
+        return;
+    }
+    let mut v = val;
+    let start = *pos;
+    let mut tmp = [0u8; 10];
+    let mut len = 0usize;
+    while v > 0 {
+        tmp[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    for k in 0..len {
+        buf[start + k] = tmp[len - 1 - k];
+    }
+    *pos += len;
 }
 
 /// Escribe un i32 como dígitos ASCII en buf[pos..]. Avanza pos.

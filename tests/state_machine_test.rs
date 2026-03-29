@@ -324,7 +324,7 @@ fn test_format_tlm_normal_no_stall() {
         stall_mask: 0,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:NORMAL:000000:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:NORMAL:000000:0ms:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn test_format_tlm_fault_with_stall() {
         stall_mask: 0b000110,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:FAULT:000110:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:FAULT:000110:0ms:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
 }
 
 #[test]
@@ -347,13 +347,14 @@ fn test_format_tlm_warn() {
         stall_mask: 0,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:WARN:000000:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:WARN:000000:0ms:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
 }
 
 #[test]
 fn test_format_tlm_with_sensor_data() {
     let mut buf = [0u8; 128];
     let sensors = SensorFrame {
+        tick_ms: 0,
         currents: [1200, 980, 1100, 1050, 1200, 1180],
         temp_c: 27,
         batt_temps: [30, 31, 29, 30, 28, 32],
@@ -366,7 +367,7 @@ fn test_format_tlm_with_sensor_data() {
     };
     assert_eq!(
         format_response(resp, &mut buf),
-        b"TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C:30:31:29:30:28:32C:0mm\n"
+        b"TLM:NORMAL:000000:0ms:1200:980:1100:1050:1200:1180:27C:30:31:29:30:28:32C:0mm\n"
     );
 }
 
@@ -374,6 +375,7 @@ fn test_format_tlm_with_sensor_data() {
 fn test_format_tlm_with_negative_current() {
     let mut buf = [0u8; 128];
     let sensors = SensorFrame {
+        tick_ms: 0,
         currents: [-500, 0, 1000, -1000, 2500, -2500],
         temp_c: -5,
         batt_temps: [0; 6],
@@ -386,6 +388,33 @@ fn test_format_tlm_with_negative_current() {
     };
     assert_eq!(
         format_response(resp, &mut buf),
-        b"TLM:NORMAL:000000:-500:0:1000:-1000:2500:-2500:-5C:0:0:0:0:0:0C:0mm\n"
+        b"TLM:NORMAL:000000:0ms:-500:0:1000:-1000:2500:-2500:-5C:0:0:0:0:0:0C:0mm\n"
     );
+}
+
+#[test]
+fn test_format_tlm_timestamp_nonzero() {
+    let mut buf = [0u8; 128];
+    let sensors = SensorFrame { tick_ms: 86400000, ..SensorFrame::ZERO }; // 24 h
+    let resp = Response::Telemetry {
+        safety: SafetyState::Normal,
+        stall_mask: 0,
+        sensors,
+    };
+    let result = format_response(resp, &mut buf);
+    assert!(result.starts_with(b"TLM:NORMAL:000000:86400000ms:"));
+}
+
+#[test]
+fn test_format_tlm_timestamp_wraps_gracefully() {
+    let mut buf = [0u8; 128];
+    // u32::MAX simula overflow — debe formatearse sin pánico
+    let sensors = SensorFrame { tick_ms: u32::MAX, ..SensorFrame::ZERO };
+    let resp = Response::Telemetry {
+        safety: SafetyState::Normal,
+        stall_mask: 0,
+        sensors,
+    };
+    let result = format_response(resp, &mut buf);
+    assert!(result.starts_with(b"TLM:NORMAL:000000:4294967295ms:"));
 }

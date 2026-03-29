@@ -1,4 +1,4 @@
-// Version: v2.6
+// Version: v2.7
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -346,13 +346,14 @@ fn main() -> ! {
     let mut hc_counter:       u8 = 0;
     let mut sen_counter:      u8 = 0;
     let mut sen_fast_counter: u8 = 0;
+    let mut elapsed_ms:      u32 = 0; // timestamp relativo desde arranque (overflow ~49 días)
     let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
 
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
 
-    iface.log("=== ROVER OLYMPUS v2.6 — MSM + HC-SR04 + VL53L0X + ENCODERS + ACS712 + LM335 + NTC ===");
+    iface.log("=== ROVER OLYMPUS v2.7 — MSM + HC-SR04 + VL53L0X + ENCODERS + ACS712 + LM335 + NTC ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -563,6 +564,11 @@ fn main() -> ! {
             tlm_counter = 0;
             iface.send_response(format_response(msm.telemetry(0, sensor_frame), &mut resp_buf));
         }
+
+        // Actualizar timestamp relativo antes del delay para que el próximo
+        // ciclo (y el TLM periódico) reflejen el tiempo acumulado real.
+        elapsed_ms = elapsed_ms.wrapping_add(LOOP_MS);
+        sensor_frame.tick_ms = elapsed_ms;
 
         // delay_ms restaurado: la ISR USART0_RX garantiza que ningún byte
         // se pierde durante el bloqueo. Ver docs/debug_usart_overflow.md.
