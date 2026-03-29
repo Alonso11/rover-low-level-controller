@@ -77,11 +77,13 @@ pub struct SensorFrame {
     /// Temperatura en °C por sensor NTC de batería:
     /// [B1a, B1b, B2a, B2b, B3a, B3b] → A7..A12
     pub batt_temps: [i32; 6],
+    /// Distancia ToF en mm (VL53L0X, D42/D43). 0 = sin lectura disponible.
+    pub dist_mm: u16,
 }
 
 impl SensorFrame {
     /// Frame vacío para inicialización (cero en todo).
-    pub const ZERO: Self = Self { currents: [0; 6], temp_c: 0, batt_temps: [0; 6] };
+    pub const ZERO: Self = Self { currents: [0; 6], temp_c: 0, batt_temps: [0; 6], dist_mm: 0 };
 }
 
 /// Respuesta a enviar de vuelta a la RPi5.
@@ -332,12 +334,13 @@ fn format_ack<'a>(buf: &'a mut [u8], label: &[u8]) -> &'a [u8] {
     &buf[..i]
 }
 
-/// `TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C\n`
+/// `TLM:<SAFETY>:<STALL_MASK>:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n`
 ///
 /// - STALL_MASK: 6 bits '0'/'1', bit5..bit0 (motor5..motor0)
 /// - I0–I5: corriente en mA por motor (puede ser negativa)
 /// - T: temperatura ambiente en °C (LM335)
 /// - B0–B5: temperatura en °C por sensor NTC de batería [B1a,B1b,B2a,B2b,B3a,B3b]
+/// - DIST: distancia en mm (VL53L0X ToF, D42/D43). 0 = sin lectura disponible.
 ///
 /// `buf` debe tener al menos 128 bytes.
 fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensors: SensorFrame) -> &'a [u8] {
@@ -367,6 +370,10 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensor
         write_i32(*batt_t, buf, &mut i);
     }
     buf[i] = b'C'; i += 1;
+    buf[i] = b':'; i += 1;
+    write_i32(sensors.dist_mm as i32, buf, &mut i);
+    buf[i] = b'm'; i += 1;
+    buf[i] = b'm'; i += 1;
     buf[i] = b'\n'; i += 1;
     &buf[..i]
 }

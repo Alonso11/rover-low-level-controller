@@ -324,7 +324,7 @@ fn test_format_tlm_normal_no_stall() {
         stall_mask: 0,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:NORMAL:000000:0:0:0:0:0:0:0C:0:0:0:0:0:0C\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:NORMAL:000000:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn test_format_tlm_fault_with_stall() {
         stall_mask: 0b000110,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:FAULT:000110:0:0:0:0:0:0:0C:0:0:0:0:0:0C\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:FAULT:000110:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
 }
 
 #[test]
@@ -347,7 +347,7 @@ fn test_format_tlm_warn() {
         stall_mask: 0,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:WARN:000000:0:0:0:0:0:0:0C:0:0:0:0:0:0C\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:WARN:000000:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm\n");
 }
 
 #[test]
@@ -357,6 +357,7 @@ fn test_format_tlm_with_sensor_data() {
         currents: [1200, 980, 1100, 1050, 1200, 1180],
         temp_c: 27,
         batt_temps: [30, 31, 29, 30, 28, 32],
+        dist_mm: 0,
     };
     let resp = Response::Telemetry {
         safety: SafetyState::Normal,
@@ -365,7 +366,7 @@ fn test_format_tlm_with_sensor_data() {
     };
     assert_eq!(
         format_response(resp, &mut buf),
-        b"TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C:30:31:29:30:28:32C\n"
+        b"TLM:NORMAL:000000:1200:980:1100:1050:1200:1180:27C:30:31:29:30:28:32C:0mm\n"
     );
 }
 
@@ -376,6 +377,7 @@ fn test_format_tlm_with_negative_current() {
         currents: [-500, 0, 1000, -1000, 2500, -2500],
         temp_c: -5,
         batt_temps: [0; 6],
+        dist_mm: 0,
     };
     let resp = Response::Telemetry {
         safety: SafetyState::Normal,
@@ -384,6 +386,6 @@ fn test_format_tlm_with_negative_current() {
     };
     assert_eq!(
         format_response(resp, &mut buf),
-        b"TLM:NORMAL:000000:-500:0:1000:-1000:2500:-2500:-5C:0:0:0:0:0:0C\n"
+        b"TLM:NORMAL:000000:-500:0:1000:-1000:2500:-2500:-5C:0:0:0:0:0:0C:0mm\n"
     );
 }

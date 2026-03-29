@@ -26,6 +26,12 @@ pub mod hc_sr04;
 /// Módulo para el sensor LiDAR TF-Luna
 #[cfg(feature = "avr")]
 pub mod tf_luna;
+/// I2C por software (bit-bang) en D42/D43 — evita conflicto con TWI hardware
+#[cfg(feature = "avr")]
+pub mod soft_i2c;
+/// Driver para el sensor Time-of-Flight VL53L0X (GY-VL53L0XV2) vía soft I2C
+#[cfg(feature = "avr")]
+pub mod vl53l0x;
 
 #[cfg(feature = "avr")]
 pub use encoder::{Encoder, HallEncoder};
@@ -33,6 +39,8 @@ pub use encoder::{Encoder, HallEncoder};
 pub use hc_sr04::HCSR04;
 #[cfg(feature = "avr")]
 pub use tf_luna::TFLuna;
+#[cfg(feature = "avr")]
+pub use vl53l0x::VL53L0X;
 
 /// Interfaz común para sensores de proximidad/distancia.
 #[cfg(feature = "avr")]

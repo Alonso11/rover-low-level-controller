@@ -81,17 +81,24 @@ D18/D19 disponibles gracias a que RPi5 usa USART3 (D14/D15), no USART1.
 
 > Fase B no se usa en la implementación actual (solo detección de stall, no dirección).
 
-### 7. Sensores de Proximidad (Ultrasonido y LiDAR)
+### 7. Sensores de Proximidad (Ultrasonido y ToF LiDAR)
 Detección de obstáculos y navegación autónoma.
 
 | Sensor | Pin Arduino | Registro | Función | Notas |
 | :--- | :--- | :--- | :--- | :--- |
 | **HC-SR04 (Trig)** | **D38** | PD7 | Trigger Out | Pulso de 20µs |
 | **HC-SR04 (Echo)** | **D39** | PG2 | Echo In | Medición de tiempo |
-| **TF-Luna (RX)** | **D16** | PH1 | TX2 (Out) | Baud: 115200 (¡Divisor 3.3V recomendado!) |
-| **TF-Luna (TX)** | **D17** | PH0 | RX2 (In) | Lectura de paquetes (9-byte frame) |
-| **VCC** | **5V** | - | Power | Alimentación 5V DC |
+| **VL53L0X (SDA)** | **D42** | PL7 | I2C Data | Soft I2C — open-drain, pull-up 4.7kΩ externo |
+| **VL53L0X (SCL)** | **D43** | PL6 | I2C Clock | Soft I2C — open-drain, pull-up 4.7kΩ externo |
+| **VL53L0X (VCC)** | **3.3V** | — | Power | Módulo GY incluye regulador; tolera 5V en VIN |
+| **VL53L0X (GND)** | **GND** | GND | Ground | Tierra común |
 | **GND** | **GND** | GND | Ground | Tierra común |
+
+> D42/D43 (PL7/PL6) se usan para I2C software (bit-bang) para evitar conflicto con el
+> bus TWI hardware (D20/D21) reservado para los encoders (INT0/INT1).
+> La dirección I2C del VL53L0X es 0x29 (fija en hardware, no configurable).
+> TF-Luna (USART2, D16/D17): componente reservado; driver `tf_luna.rs` mantenido pero
+> no instanciado. Ver `docs/decision-log.md` §Semana 4.
 
 ### 8. Sensores Analógicos (Corriente y Temperatura)
 

@@ -1,9 +1,9 @@
-// Version: v2.5
+// Version: v2.6
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
 //!   1. `msm.tick()`            — watchdog: sin PING en 100 ciclos (~2 s) → FAULT
-//!   2. HC-SR04 (cada 5 ciclos) — emergencia < 20 cm → FAULT
+//!   2. HC-SR04 + VL53L0X (cada 5 ciclos) — emergencia < 20/15 cm → FAULT
 //!   3. Stall detection         — encoders via ISR → msm.update_safety(mask)
 //!   4. `iface.poll_command()`  — trama ASCII desde USART0 (USB/RPi5)
 //!   5. `msm.process(cmd)`      — transición de estado + calcula DriveOutput
@@ -17,6 +17,7 @@
 //!   - Timer2 D9(FR) D10(FL) | Timer3 D5(CR) | Timer4 D6(CL) D7(RR) D8(RL)
 //!   - Dirección motores: D22–D37
 //!   - HC-SR04: D38(Trigger) D39(Echo)
+//!   - VL53L0X: D42(SDA/PL7) D43(SCL/PL6) - soft I2C, avoids TWI conflict
 //!   - Encoders: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
 //!               D2(INT4/RR) D3(INT5/RL)
 //!   - ACS712-30A: A0(FR) A1(FL) A2(CR) A3(CL) A4(RR) A5(RL)
@@ -39,7 +40,7 @@ use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuff
 use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
@@ -58,6 +59,10 @@ const HC_READ_PERIOD: u8  = 5;
 
 /// Distancia de emergencia HC-SR04 en mm (20 cm → FAULT inmediato).
 const HC_EMERGENCY_MM: u16 = 200;
+
+/// Distancia de emergencia VL53L0X en mm (15 cm → FAULT inmediato).
+/// Umbral más ajustado que HC-SR04 gracias a la mayor precisión del ToF láser.
+const TOF_EMERGENCY_MM: u16 = 150;
 
 /// Ciclos sin movimiento de encoder para declarar stall (~1 s a 20 ms/ciclo).
 /// Coincide con el umbral de DriveChannel::check_stall en controller/mod.rs.
@@ -277,6 +282,15 @@ fn main() -> ! {
         pins.d39.into_floating_input().forget_imode(),
     );
 
+    // ── VL53L0X — D42(SDA/PL7), D43(SCL/PL6) vía soft I2C ──────────────────
+    // Los pines son controlados directamente por soft_i2c (registros PORTL/DDRL),
+    // no se consumen como recursos arduino-hal. init() puede fallar si el sensor
+    // no responde; el driver queda en ready=false y read_mm() no se llamará.
+    let mut tof = VL53L0X::new();
+    if tof.init() {
+        tof.start_continuous();
+    }
+
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
     // ACS712 (corriente):         A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
     // LM335  (temp. ambiente):    A6
@@ -338,7 +352,7 @@ fn main() -> ! {
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
 
-    iface.log("=== ROVER OLYMPUS v2.5 — MSM + HC-SR04 + ENCODERS + ACS712 + LM335 + NTC ===");
+    iface.log("=== ROVER OLYMPUS v2.6 — MSM + HC-SR04 + VL53L0X + ENCODERS + ACS712 + LM335 + NTC ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -348,7 +362,8 @@ fn main() -> ! {
             iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
 
-        // 2. HC-SR04 — D38(Trigger) D39(Echo), lectura cada HC_READ_PERIOD ciclos (~100 ms)
+        // 2. HC-SR04 + VL53L0X — lectura cada HC_READ_PERIOD ciclos (~100 ms)
+        //    HC-SR04 es bloqueante (~30 ms max); VL53L0X no bloquea (modo continuo).
         hc_counter = hc_counter.wrapping_add(1);
         if hc_counter >= HC_READ_PERIOD {
             hc_counter = 0;
@@ -357,6 +372,17 @@ fn main() -> ! {
                     let resp = msm.process(Command::Fault);
                     sync_drive!(rover, msm);
                     iface.send_response(format_response(resp, &mut resp_buf));
+                }
+            }
+            // VL53L0X: lectura no bloqueante — solo hay dato si el sensor está listo
+            if tof.ready {
+                if let Some(mm) = tof.read_mm() {
+                    sensor_frame.dist_mm = mm;
+                    if mm < TOF_EMERGENCY_MM {
+                        let resp = msm.process(Command::Fault);
+                        sync_drive!(rover, msm);
+                        iface.send_response(format_response(resp, &mut resp_buf));
+                    }
                 }
             }
         }
