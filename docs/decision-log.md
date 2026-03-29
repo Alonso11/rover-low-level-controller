@@ -205,10 +205,50 @@ cargo +nightly test --target x86_64-unknown-linux-gnu --no-default-features --te
 | Frecuencia máx | 100 Hz | 50 Hz |
 | Conflicto de pines | Ninguno | SDA/SCL vs INT0/INT1 (encoders FR/FL) |
 
-**Solución propuesta para integración futura del VL53L0X:**
-- Usar I2C por software (bit-bang) en D42 (PL7) y D43 (PL6), ambos libres
-- Leer a ~10 Hz (cada 10 ciclos de 20ms) — suficiente para obstacle avoidance
-- No afecta encoders ni ningún otro periférico
+**Solución implementada (2026-03-28):**
+- I2C por software en D42 (PL7) / D43 (PL6) — driver `src/sensors/soft_i2c.rs`
+- Driver completo `src/sensors/vl53l0x.rs` con secuencia Pololu (SPAD + tuning + calibración)
+- Integrado en `main.rs` v2.6: FAULT si distancia < 150 mm; `dist_mm` en frame TLM
+
+---
+
+## Semana 4 — Auditoría SRS y mejoras TLM (28 mar 2026)
+
+### Auditoría SRS vs implementación LLC
+
+Realizada comparación entre los requisitos del SRS relevantes al Nodo B (Arduino Mega) y el estado del firmware v2.6. Subsistemas auditados: PROP, EPS (sensado), C&DH (interfaz UART).
+
+**Requisitos cubiertos:**
+- PROP-REQ-002 / SyRS-015: Fault Stop ≤ 500 ms → implementado en ≤ 20 ms
+- RF-003 / SyRS-012: Detección obstáculos ≥ 20 cm → HC-SR04 (200 mm) + VL53L0X (150 mm)
+- RF-005 / SyRS-014: Fault Stop ante stall → encoders × 6, umbral 1 s
+- CDH-REQ-001 / RNF-001: Latencia ≤ 2 s → watchdog exactamente 2 s
+- EPS-REQ-001 (corriente): ACS712 × 6, TLM a 1 Hz
+- EPS-REQ-001 (temperatura): NTC × 6 + LM335, Warn/Limit/Fault térmico
+
+**Gaps identificados y estado:**
+
+| Gap | Req | Estado al 28-mar-2026 |
+|---|---|---|
+| Timestamp en TLM | SRS-020 | **Cerrado en v2.7** — `tick_ms: u32` (ms desde arranque) |
+| Voltage monitoring | EPS-REQ-001 | **Abierto** — requiere sensor hardware (INA219 o divisor a ADC) |
+| Link status en TLM | SRS-020 | **Abierto** — watchdog existe pero sin campo explícito en frame |
+| Slip ratio continuo | SyRS-013 / RF-004 | **Abierto** — stall binario implementado; cálculo de slip % es Nodo A |
+| USART0 → USART3 | Producción RPi5 | **Abierto** — pendiente de flash |
+| Servo sin bloqueo | Estabilidad ISR | **Abierto** — Timer1/OC1A pendiente |
+
+### Decisión: timestamp relativo en TLM (v2.7)
+
+| Decisión | Motivo |
+|---|---|
+| Contador `elapsed_ms: u32` en main loop, incremento `wrapping_add(LOOP_MS)` cada ciclo | Sin RTC en Arduino Mega; timestamp relativo desde arranque es suficiente para trazabilidad de misión (SRS-020) |
+| Overflow a ~49 días con u32 | Duración de misión << 49 días; `wrapping_add` previene pánico |
+| Campo `tick_ms` como tercer campo en TLM (tras safety y stall_mask) | Posición fija facilita parsing en RPi5 sin cambiar offsets de campos de datos |
+
+**Nuevo formato TLM (v2.7):**
+```
+TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm\n
+```
 
 ---
 
@@ -216,12 +256,12 @@ cargo +nightly test --target x86_64-unknown-linux-gnu --no-default-features --te
 
 | Tarea | Bloqueante | Prioridad |
 |---|---|---|
-| Flash v2.5 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible | Alta — bloquea todas las pruebas de integración |
+| Flash v2.7 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible | Alta — bloquea todas las pruebas de integración |
 | Calibrar `zero_mv` del ACS712 con motores desconectados | Flash pendiente | Alta — afecta precisión de Warn/Limit |
 | Calibrar offset NTC de baterías en hardware real | Flash pendiente | Alta — offsets actuales = 0 |
-| Verificar umbrales Warn/Limit en hardware real (¿son 1200/1600 mA correctos?) | Flash + calibración pendiente | Media |
-| Integrar VL53L0X en `main.rs` con I2C software en D42/D43 (reemplaza TF-Luna) | Diseño driver + resolución conflicto pines | Media |
-| Cambiar USART0 → USART3 para producción con RPi5 | Flash + validación pendiente | Media |
+| Verificar umbrales OC Warn/Limit (1200/1600 mA) en hardware real | Flash + calibración pendiente | Media |
+| Añadir voltage monitoring — EPS-REQ-001 (gap abierto) | Diseño hardware: INA219 I2C o divisor a A13/A14 | Alta — requisito EPS explícito |
+| Cambiar USART0 → USART3 para producción con RPi5 | Flash + validación pendiente | Alta — bloquea integración con Nodo A |
 | PR `feature/msm-main-integration` → `debug` | Flash + validación pendiente | Media |
 | Reescribir `servo.rs` con Timer1/OC1A (eliminar `delay_us` bloqueante) | — | Media — afecta estabilidad ISRs |
 | Añadir polyfuse 2 A en alimentación de cada L298N | Diseño electrónico | Media — protección hardware primaria |
