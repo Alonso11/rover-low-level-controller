@@ -176,7 +176,7 @@ Comandos en ASCII plano, terminados con `\n`. Buffer interno de **80 bytes**.
 El Arduino emite un frame TLM cada ~1 s sin ser solicitado:
 
 ```
-TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
+TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
 ```
 
 | Campo | Descripción |
@@ -184,14 +184,16 @@ TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B
 | SAFETY | Estado: NORMAL / WARN / LIMIT / FAULT |
 | STALL | Máscara stall 6 bits (bit0=FR … bit5=RL) |
 | TS | Tick Arduino en ms (monotónico desde arranque) |
-| I0–I5 | Corrientes motores FR/FL/CR/CL/RR/RL en mA |
-| T | Temperatura ambiente (LM335) en °C |
+| MV | Tensión bus batería en mV (INA226, D42/D43). 0 = sin lectura |
+| MA | Corriente total batería en mA con signo (INA226). 0 = sin lectura |
+| I0–I5 | Corrientes motores FR/FL/CR/CL/RR/RL en mA (ACS712) |
+| T | Temperatura ambiente (LM335, A6) en °C |
 | B0–B5 | Temperaturas celdas batería (NTC A7–A12) en °C |
-| DIST | Distancia frontal (VL53L0X) en mm (0 = sin lectura) |
+| DIST | Distancia frontal (VL53L0X, D42/D43) en mm (0 = sin lectura) |
 
 Ejemplo:
 ```
-TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
 ```
 
 El HLC (`rover_bridge.so`) lee los TLM con `recv_tlm()` (timeout 50 ms, no bloqueante)

@@ -277,9 +277,9 @@ navigation model without giving up local safety authority.
 | HC-SR04 (D38/D39) | Arduino | Emergency hard stop < 200 mm → FAULT | ~20 ms |
 | Encoders (INT0–INT5) | Arduino | Stall → FAULT | ~20 ms |
 
-### Current Implementation Status (v2.7)
+### Current Implementation Status (v2.8)
 
-As of firmware v2.7, all local safety layers are active:
+As of firmware v2.8, all local safety layers are active:
 
 - **Layer 1 — HC-SR04**: active, reads every 5 cycles (~100 ms), FAULT if < 200 mm.
 - **Layer 2 — VL53L0X**: active, soft I2C D42/D43, FAULT si distancia < 150 mm.
@@ -293,9 +293,12 @@ As of firmware v2.7, all local safety layers are active:
   Fault ≥2000 mA.
 - **Battery temperature**: active, 6× NTC en A7–A12, Warn >45°C, Limit >55°C, Fault >65°C.
 - **Timestamp TLM**: campo `tick_ms` (u32, ms desde arranque) en cada frame TLM.
+- **Voltage monitoring**: active, INA226 en bus soft I2C D42/D43 (dirección 0x40,
+  compartido con VL53L0X 0x29). Campos `batt_mv` y `batt_ma` en TLM.
+  Requiere shunt externo 10 mΩ / 5W en serie con la carga.
 
-El frame TLM incluye corrientes, temperatura ambiente, temperaturas de celda
-y distancia frontal. Ver §9 para el formato completo.
+El frame TLM incluye corrientes, temperatura ambiente, temperaturas de celda,
+distancia frontal, tensión y corriente de batería. Ver §9 para el formato completo.
 
 ---
 
@@ -618,33 +621,42 @@ patrón de los tests nativos x86 ya existentes.
 
 ```rust
 pub struct SensorFrame {
-    pub currents: [i32; 6],    // mA por motor [FR, FL, CR, CL, RR, RL]
+    pub tick_ms: u32,           // ms desde arranque (monotónico, wrapping ~49 días)
+    pub batt_mv: u16,           // tensión bus batería en mV (INA226). 0 = sin lectura
+    pub batt_ma: i32,           // corriente total batería en mA (INA226). 0 = sin lectura
+    pub currents: [i32; 6],     // mA por motor [FR, FL, CR, CL, RR, RL]
     pub temp_c: i32,            // temperatura ambiente en °C
-    pub cell_temps: [i32; 6],   // temperaturas celdas batería en °C [B0–B5]
+    pub batt_temps: [i32; 6],   // temperaturas celdas batería en °C [B0–B5]
     pub dist_mm: u32,           // distancia VL53L0X en mm (0 = sin lectura)
 }
 ```
 
-### Formato final (v2.7)
+### Formato final (v2.8)
 
 ```
-TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
-    ^──────^ ^─────^ ^────^ ^────────────────────────────^ ^──^ ^────────────────────────────────^ ^──────^
-    safety   stall   tick   corrientes (mA)                 temp  temperaturas celdas (°C)           dist
+TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
+    ^──────^ ^─────^ ^────^ ^────────^ ^──────────────────────────────^ ^──^ ^────────────────────────────────^ ^──────^
+    safety   stall   tick   INA226      corrientes (mA) motores          temp  temps celdas (°C)                  dist
 ```
 
 Ejemplo:
 ```
-TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
 ```
 
-Longitud máxima estimada: 110 bytes → `RESP_BUF = 120`.
+Longitud máxima estimada: 130 bytes → `RESP_BUF = 160`.
 
 ### Decisión: timestamp relativo (v2.7)
 
 Se añadió el campo `tick_ms` (tercer campo) para cumplir SRS-020 (trazabilidad de misión).
 El contador `elapsed_ms: u32` en `main.rs` usa `wrapping_add(LOOP_MS)` cada ciclo.
 Overflow a ~49 días — dentro del margen de la misión. Ver `decision-log.md` §Semana 4.
+
+### Decisión: INA226 en bus soft I2C compartido (v2.8)
+
+El INA226 (0x40) comparte el bus soft I2C D42/D43 con el VL53L0X (0x29).
+Las direcciones no colisionan. La lectura INA226 ocurre en el slow tier (~500 ms),
+intercalada con las lecturas ACS712/LM335/NTC. Ver `docs/vl53l0x.md` §Bus compartido.
 
 ---
 

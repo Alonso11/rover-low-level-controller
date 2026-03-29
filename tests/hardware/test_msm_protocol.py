@@ -2,7 +2,13 @@
 """
 test_msm_protocol.py — Verificación del protocolo MSM desde PC via USB
 =======================================================================
-Version: v2.1
+Version: v2.2
+
+Cambios v2.2:
+  - Actualizado TLM_PATTERN al formato v2.8 completo:
+      TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
+    Añadidos: batt_mv (INA226 tensión bus), batt_ma (INA226 corriente total).
+  - Actualizado el bloque de validación del test #13 con los nuevos grupos del regex.
 
 Cambios v2.1:
   - Actualizado TLM_PATTERN al formato v2.7 completo:
@@ -40,18 +46,21 @@ BAUD     = 115200
 TIMEOUT  = 3.0   # segundos
 BOOT_WAIT = 2.0  # espera tras reset por DTR
 
-# Formato TLM v2.7:
-#   TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
+# Formato TLM v2.8:
+#   TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
 # Ejemplo:
-#   TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+#   TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+# Grupos: 1=safety, 2=stall, 3=tick_ms, 4=batt_mv, 5=batt_ma, 6-11=I0-I5, 12=T, 13-18=B0-B5, 19=dist_mm
 TLM_PATTERN = re.compile(
-    r"^TLM:(NORMAL|WARN|LIMIT|FAULT):"     # safety state
-    r"([01]{6}):"                           # stall mask 6 bits
-    r"(\d+)ms:"                             # tick_ms (timestamp Arduino)
-    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):"  # corrientes I0-I5 (mA)
-    r"(-?\d+)C:"                            # temperatura ambiente LM335 (°C)
-    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+)C:"  # NTC celdas B0-B5 (°C)
-    r"(\d+)mm$"                             # distancia VL53L0X (mm)
+    r"^TLM:(NORMAL|WARN|LIMIT|FAULT):"     # 1: safety state
+    r"([01]{6}):"                           # 2: stall mask 6 bits
+    r"(\d+)ms:"                             # 3: tick_ms (timestamp Arduino)
+    r"(\d+)mV:"                             # 4: tensión batería en mV (INA226)
+    r"(-?\d+)mA:"                           # 5: corriente batería en mA (INA226)
+    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):"  # 6-11: corrientes motores I0-I5
+    r"(-?\d+)C:"                            # 12: temperatura ambiente LM335 (°C)
+    r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+)C:"  # 13-18: NTC celdas B0-B5 (°C)
+    r"(\d+)mm$"                             # 19: distancia VL53L0X (mm)
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -168,9 +177,9 @@ def main():
     resp = send(s, b"FOOBAR\n")
     if check("FOOBAR → ERR:UNKNOWN", resp, "ERR:UNKNOWN"): passed += 1
 
-    # 13. Formato TLM v2.7 completo
-    #     TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
-    print("\n--- Test TLM v2.7 ---")
+    # 13. Formato TLM v2.8 completo
+    #     TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
+    print("\n--- Test TLM v2.8 ---")
     total += 1
     send(s, b"RST\n")   # aseguramos STANDBY
     time.sleep(0.1)
@@ -181,26 +190,33 @@ def main():
         m = TLM_PATTERN.match(tlm)
         if m:
             print(f"  [PASS] {'TLM formato OK':20s}  got={tlm!r}")
-            tick_ms   = int(m.group(3))
-            currents  = [int(m.group(i)) for i in range(4, 10)]
-            temp_amb  = int(m.group(10))
-            cell_temps = [int(m.group(i)) for i in range(11, 17)]
-            dist_mm    = int(m.group(17))
+            tick_ms    = int(m.group(3))
+            batt_mv    = int(m.group(4))
+            batt_ma    = int(m.group(5))
+            currents   = [int(m.group(i)) for i in range(6, 12)]
+            temp_amb   = int(m.group(12))
+            cell_temps = [int(m.group(i)) for i in range(13, 19)]
+            dist_mm    = int(m.group(19))
             # Rangos físicos razonables (sin hardware puede dar 0)
+            if batt_mv > 0 and not 8000 <= batt_mv <= 20000:
+                print(f"  [WARN] Tensión batería fuera de rango: {batt_mv} mV")
             if not all(-30000 <= c <= 30000 for c in currents):
-                print(f"  [WARN] Corrientes fuera de rango: {currents}")
+                print(f"  [WARN] Corrientes motores fuera de rango: {currents}")
             if not -40 <= temp_amb <= 125:
                 print(f"  [WARN] Temp ambiente fuera de rango: {temp_amb} C")
             if not all(-40 <= t <= 125 for t in cell_temps):
                 print(f"  [WARN] Temp celdas fuera de rango: {cell_temps}")
             if not 0 <= dist_mm <= 2000:
                 print(f"  [WARN] Distancia fuera de rango: {dist_mm} mm")
+            if batt_mv == 0:
+                print(f"  [WARN] batt_mv=0 (INA226 no conectado o sin shunt)")
             if tick_ms == 0:
                 print(f"  [WARN] tick_ms=0 (firmware recién arrancado, normal)")
+            print(f"  [INFO] Batería: {batt_mv} mV / {batt_ma} mA")
             passed += 1
         else:
             print(f"  [FAIL] {'TLM formato':20s}  got={tlm!r}")
-            print(f"         Esperado: TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm")
+            print(f"         Esperado: TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm")
     else:
         print(f"  [FAIL] {'TLM no recibido':20s}  (timeout esperando TLM:)")
 

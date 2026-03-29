@@ -252,7 +252,20 @@ TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:...<B5>C:<DI
 
 ---
 
-## Pendiente (al 28 mar 2026)
+## Semana 4 — Voltage monitoring INA226 (28–29 mar 2026)
+
+| Fecha | Decisión | Motivo |
+|---|---|---|
+| 2026-03-29 | Integrar INA226 en `main.rs` v2.8 via bus soft I2C D42/D43 compartido con VL53L0X | EPS-REQ-001 requiere monitoreo de tensión y corriente del pack de baterías; el bus compartido (0x40 vs 0x29) evita añadir pines dedicados |
+| 2026-03-29 | `Current_LSB = 1 mA` → `CAL = 5120 / shunt_mohm` | Simplifica la conversión a mA: el registro CURRENT devuelve mA directamente sin multiplicador adicional en el loop principal |
+| 2026-03-29 | Shunt de 10 mΩ / 5W (`INA226_SHUNT_MOHM = 10`) | Con `Current_LSB = 1 mA` y shunt de 10 mΩ el rango es ±32 A — suficiente para el sistema (motores + electrónica); potencia máxima a 10 A: P = 0.01 × 100 = 1 W << 5 W |
+| 2026-03-29 | Leer INA226 en slow tier (~500 ms), mismo bloque que ACS712/LM335/NTC | La tensión de batería cambia lentamente; no requiere el fast tier. Añadir al slow tier mantiene el overhead de ADC acotado |
+| 2026-03-29 | Campos `batt_mv` y `batt_ma` como 4º y 5º campo del frame TLM (tras `tick_ms`) | El HLC (`olympus_controller.py`) ya esperaba estos campos en esa posición según el ICD; añadirlos completa el formato de 20 campos definido en el SRS |
+| 2026-03-29 | `ready: bool` en `INA226` — si `init()` falla (die ID != 0x2260), `batt_mv = batt_ma = 0` | El rover no debe dejar de funcionar si el INA226 no responde (shunt no conectado, I2C dañado); el HLC interpreta 0 como "sin lectura" |
+
+---
+
+## Pendiente (al 29 mar 2026)
 
 | Tarea | Bloqueante | Prioridad |
 |---|---|---|
@@ -260,7 +273,7 @@ TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:...<B5>C:<DI
 | Calibrar `zero_mv` del ACS712 con motores desconectados | Flash pendiente | Alta — afecta precisión de Warn/Limit |
 | Calibrar offset NTC de baterías en hardware real | Flash pendiente | Alta — offsets actuales = 0 |
 | Verificar umbrales OC Warn/Limit (1200/1600 mA) en hardware real | Flash + calibración pendiente | Media |
-| Añadir voltage monitoring — EPS-REQ-001 (gap abierto) | Diseño hardware: INA219 I2C o divisor a A13/A14 | Alta — requisito EPS explícito |
+| ~~Añadir voltage monitoring — EPS-REQ-001~~ | ✅ INA226 integrado en v2.8 | — |
 | Cambiar USART0 → USART3 para producción con RPi5 | Flash + validación pendiente | Alta — bloquea integración con Nodo A |
 | PR `feature/msm-main-integration` → `debug` | Flash + validación pendiente | Media |
 | Reescribir `servo.rs` con Timer1/OC1A (eliminar `delay_us` bloqueante) | — | Media — afecta estabilidad ISRs |
