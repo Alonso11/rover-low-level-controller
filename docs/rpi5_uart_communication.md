@@ -182,7 +182,7 @@ TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0
 | Campo | Descripción |
 |-------|-------------|
 | SAFETY | Estado: NORMAL / WARN / LIMIT / FAULT |
-| STALL | Máscara stall 6 bits (bit0=FR … bit5=RL) |
+| STALL | Máscara stall 6 bits, MSB-first: posición 0 (izq) = RL … posición 5 (der) = FR. Ej: `000001` = solo FR stallado |
 | TS | Tick Arduino en ms (monotónico desde arranque) |
 | MV | Tensión bus batería en mV (INA226, D42/D43). 0 = sin lectura |
 | MA | Corriente total batería en mA con signo (INA226). 0 = sin lectura |
