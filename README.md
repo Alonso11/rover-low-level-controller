@@ -119,7 +119,7 @@ Requieren el Arduino conectado y el firmware flasheado:
 
 | Script | Firmware requerido | Descripción |
 |--------|-------------------|-------------|
-| `tests/hardware/test_msm_protocol.py` | Firmware principal (v2.7+) | 13 tests automáticos del protocolo MSM + validación formato TLM v2.7 |
+| `tests/hardware/test_msm_protocol.py` | Firmware principal (v2.8+) | 13 tests automáticos del protocolo MSM + validación formato TLM v2.8 |
 | `tests/hardware/test_motors_debug.py` | `examples/debug_motors_l298n` | Control interactivo F/B/S para verificar cada motor individualmente |
 
 ```bash
@@ -132,6 +132,9 @@ python3 tests/hardware/test_msm_protocol.py [/dev/ttyUSB0]
 # Debug de motores (flashear debug_motors_l298n primero)
 python3 tests/hardware/test_motors_debug.py [/dev/ttyUSB0]
 ```
+
+Ver [`docs/testing.md`](docs/testing.md) para la explicación completa de flags,
+troubleshooting y el flujo de trabajo recomendado antes de cada commit.
 
 ---
 
@@ -194,12 +197,12 @@ Comunicación ASCII con terminador `\n` a 115200 baud 8N1.
 ### Telemetría asíncrona (cada ~1 s)
 
 ```
-TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
+TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
 ```
 
 Ejemplo:
 ```
-TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
 ```
 
 ---
@@ -219,6 +222,7 @@ TLM:NORMAL:000000:1000ms:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342
 | [`docs/encoder.md`](docs/encoder.md) | Encoders Hall, ISRs, stall detection |
 | [`docs/peripheral_timers.md`](docs/peripheral_timers.md) | Asignación de timers PWM |
 | [`docs/decision-log.md`](docs/decision-log.md) | Historial de decisiones de arquitectura |
+| [`docs/testing.md`](docs/testing.md) | Guía de testing: flags, suites, flujo de trabajo, troubleshooting |
 
 ---
 
