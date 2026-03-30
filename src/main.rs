@@ -60,6 +60,17 @@ const HC_READ_PERIOD: u8  = 5;
 /// Distancia de emergencia HC-SR04 en mm (20 cm → FAULT inmediato).
 const HC_EMERGENCY_MM: u16 = 200;
 
+/// Timeout de eco HC-SR04 en µs.
+///
+/// Limita el bloqueo del loop principal. Sin límite, un objeto a ~4 m provoca
+/// ~23 ms de busy-wait, excediendo el ciclo de 20 ms. Con este valor solo se
+/// espera el eco de objetos hasta ~300 mm (1.5× el umbral de emergencia), lo
+/// que reduce el bloqueo máximo de ~30 ms a ~1.75 ms.
+///
+/// Fórmula: `distance_mm × 10_000 / 1_715`.
+/// 300 mm → 1 749 µs; redondeado a 1 750 µs.
+const HC_ECHO_TIMEOUT_US: u32 = 1_750;
+
 /// Distancia de emergencia VL53L0X en mm (15 cm → FAULT inmediato).
 /// Umbral más ajustado que HC-SR04 gracias a la mayor precisión del ToF láser.
 const TOF_EMERGENCY_MM: u16 = 150;
@@ -282,10 +293,13 @@ fn main() -> ! {
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
 
     // ── HC-SR04 — D38(Trigger), D39(Echo) ───────────────────────────────────
+    // with_timeout limita el bloqueo a ~1.75 ms (rango útil ~300 mm).
+    // Solo usamos el sensor para detección de emergencia (< HC_EMERGENCY_MM),
+    // no para navegación → no necesitamos el rango completo de 4 m.
     let mut hcsr04 = HCSR04::new(
         pins.d38.into_output(),
         pins.d39.into_floating_input().forget_imode(),
-    );
+    ).with_timeout(HC_ECHO_TIMEOUT_US);
 
     // ── VL53L0X — D42(SDA/PL7), D43(SCL/PL6) vía soft I2C ──────────────────
     // Los pines son controlados directamente por soft_i2c (registros PORTL/DDRL),
