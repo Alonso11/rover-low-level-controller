@@ -7,7 +7,8 @@
 pub use nb;
 
 // Módulos que dependen del HAL de Arduino — solo disponibles con feature "avr".
-#[cfg(feature = "avr")]
+// motor_control expone Motor/Servo/ErasedMotor/SixWheelRover sin gate (lógica pura);
+// los submodules de drivers (l298n, bts7960, servo) llevan su propio gate interno.
 pub mod motor_control;
 #[cfg(feature = "avr")]
 pub mod command_interface;
