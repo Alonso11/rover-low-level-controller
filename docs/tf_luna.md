@@ -60,8 +60,12 @@ Se utiliza el puerto **Serial 2** del Mega para evitar interferencias con la com
 ```rust
 let serial2 = arduino_hal::Usart::new(dp.USART2, pins.d17.into_floating_input(), pins.d16.into_output(), 115200.into());
 let mut tf_luna = TFLuna::new(serial2);
-if let Some(dist_mm) = tf_luna.get_distance_mm() {
-    // Uso de la distancia en mm
+// get_distance_mm() devuelve Result<u16, SensorError>
+match tf_luna.get_distance_mm() {
+    Ok(dist_mm)                       => { /* distancia válida en mm */ }
+    Err(SensorError::Timeout)         => { /* sensor no respondió a tiempo */ }
+    Err(SensorError::ChecksumError)   => { /* frame recibido pero corrupto */ }
+    _                                 => {}
 }
 ```
 

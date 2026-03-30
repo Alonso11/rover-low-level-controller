@@ -1,4 +1,4 @@
-<!-- Version: v2.0 -->
+<!-- Version: v2.1 -->
 # Rover Low-Level Controller (LLC) — Rust/AVR
 
 Firmware modular para un rover de 6 ruedas en **Rust embebido** sobre el
@@ -36,21 +36,23 @@ por UART y gestiona motores, encoders, sensores de proximidad y corriente.
 src/
 ├── lib.rs                     # Punto de entrada de la librería
 ├── main.rs                    # Loop principal: watchdog → sensores → MSM → motores → TLM
+├── config.rs                  # Constantes de compilación (tiempos, umbrales, periodos ADC)
 ├── motor_control/
-│   ├── mod.rs                 # Traits Motor / Servo
-│   ├── l298n.rs               # Driver L298N + SixWheelRover
-│   ├── bts7960.rs             # Driver BTS7960 alta potencia
-│   ├── servo.rs               # PWM software para servo
+│   ├── mod.rs                 # Traits Motor / Servo + SixWheelRover (lógica pura)
+│   ├── l298n.rs               # Driver L298N (AVR)
+│   ├── bts7960.rs             # Driver BTS7960 alta potencia (AVR)
+│   ├── servo.rs               # PWM software para servo (AVR)
 │   └── erased.rs              # ErasedMotor — type erasure para arrays de motores
 ├── sensors/
-│   ├── mod.rs                 # Trait ProximitySensor
-│   ├── encoder.rs             # HallEncoder (interrupt-safe con AtomicI32)
-│   ├── hc_sr04.rs             # HC-SR04 ultrasónico (D38/D39)
-│   ├── vl53l0x.rs             # VL53L0X ToF I2C (D42/D43 soft I2C)
-│   ├── soft_i2c.rs            # I2C bit-bang (evita conflicto TWI/encoders)
-│   ├── acs712.rs              # ACS712-30A corriente de motor
-│   ├── lm335.rs               # LM335 temperatura ambiente
-│   └── tf_luna.rs             # TF-Luna LiDAR (reservado, no instanciado)
+│   ├── mod.rs                 # Trait ProximitySensor + enum SensorError
+│   ├── encoder.rs             # HallEncoder (interrupt-safe con AtomicI32) (AVR)
+│   ├── hc_sr04.rs             # HC-SR04 ultrasónico D38/D39, Result API (AVR)
+│   ├── vl53l0x.rs             # VL53L0X ToF I2C D42/D43 soft I2C, Result API (AVR)
+│   ├── soft_i2c.rs            # I2C bit-bang con clock-stretch timeout (AVR)
+│   ├── acs712.rs              # ACS712-30A corriente de motor (puro Rust)
+│   ├── lm335.rs               # LM335 temperatura ambiente (puro Rust)
+│   ├── ntc_thermistor.rs      # NTC AD36958 temperatura celdas (puro Rust)
+│   └── tf_luna.rs             # TF-Luna LiDAR reservado, Result API (AVR)
 ├── controller/
 │   └── mod.rs                 # RoverController — detección de stall por canal
 ├── state_machine/
@@ -107,11 +109,11 @@ Validan la MSM, drivers analógicos y lógica de motores en la máquina de desar
 ./test_native.sh
 ```
 
-| Suite | Cobertura |
-|-------|-----------|
-| `state_machine_test` | Todas las transiciones MSM, watchdog, format_response, parser TLM |
-| `sensors_test` | ACS712 conversión mA, LM335 conversión °C, umbrales Warn/Limit/Fault |
-| `motor_logic_test` | Speed mapping, signos de dirección, ErasedMotor |
+| Suite | Tests | Cobertura |
+|-------|-------|-----------|
+| `state_machine_test` | 46 | Todas las transiciones MSM, watchdog, format_response, parser TLM |
+| `sensors_test` | 57 | ACS712 conversión mA, LM335 conversión °C, NTC interpolación LUT, umbrales Warn/Limit/Fault |
+| `motor_logic_test` | 28 | Speed mapping, signos de dirección L298N/BTS7960, SixWheelRover, ErasedMotor |
 
 ### Tests de hardware (PC + Arduino via USB)
 
@@ -119,7 +121,7 @@ Requieren el Arduino conectado y el firmware flasheado:
 
 | Script | Firmware requerido | Descripción |
 |--------|-------------------|-------------|
-| `tests/hardware/test_msm_protocol.py` | Firmware principal (v2.8+) | 13 tests automáticos del protocolo MSM + validación formato TLM v2.8 |
+| `tests/hardware/test_msm_protocol.py` | Firmware principal (v2.10+) | 13 tests automáticos del protocolo MSM + validación formato TLM |
 | `tests/hardware/test_motors_debug.py` | `examples/debug_motors_l298n` | Control interactivo F/B/S para verificar cada motor individualmente |
 
 ```bash
@@ -213,16 +215,16 @@ TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:2
 |-----|-----------|
 | [`docs/the_pins_connections.md`](docs/the_pins_connections.md) | Mapa completo de pines del ATmega2560 |
 | [`docs/rpi5_uart_communication.md`](docs/rpi5_uart_communication.md) | Comunicación RPi5 ↔ Arduino, protocolo MSM, cableado |
-| [`docs/consideration_implementation.md`](docs/consideration_implementation.md) | Decisiones de diseño: ErasedMotor, timers, TLM, sensores |
+| [`docs/consideration_implementation.md`](docs/consideration_implementation.md) | Decisiones de diseño: ErasedMotor, timers, TLM, sensores, config.rs |
 | [`docs/motors.md`](docs/motors.md) | Arquitectura de motores, PWM, encoders |
 | [`docs/vl53l0x.md`](docs/vl53l0x.md) | Sensor ToF VL53L0X (táctica, D42/D43 soft I2C) |
-| [`docs/hc_sr04.md`](docs/hc_sr04.md) | Sensor HC-SR04 (emergencia, D38/D39) |
+| [`docs/hc_sr04.md`](docs/hc_sr04.md) | Sensor HC-SR04 (emergencia, D38/D39), API Result |
 | [`docs/acs712.md`](docs/acs712.md) | Sensor de corriente ACS712-30A, protección graduada |
 | [`docs/lm335.md`](docs/lm335.md) | Sensor temperatura LM335 |
 | [`docs/encoder.md`](docs/encoder.md) | Encoders Hall, ISRs, stall detection |
 | [`docs/peripheral_timers.md`](docs/peripheral_timers.md) | Asignación de timers PWM |
 | [`docs/decision-log.md`](docs/decision-log.md) | Historial de decisiones de arquitectura |
-| [`docs/testing.md`](docs/testing.md) | Guía de testing: flags, suites, flujo de trabajo, troubleshooting |
+| [`docs/testing.md`](docs/testing.md) | Guía de testing: flags, 131 tests x86, flujo de trabajo, troubleshooting |
 
 ---
 

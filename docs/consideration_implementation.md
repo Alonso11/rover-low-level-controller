@@ -1,5 +1,5 @@
 # Implementation Considerations
-<!-- Version: v2.0 -->
+<!-- Version: v2.1 -->
 
 This document records non-obvious design decisions, constraints, and the
 reasoning behind them. It is intended as a reference for future maintainers.
@@ -277,12 +277,14 @@ navigation model without giving up local safety authority.
 | HC-SR04 (D38/D39) | Arduino | Emergency hard stop < 200 mm → FAULT | ~20 ms |
 | Encoders (INT0–INT5) | Arduino | Stall → FAULT | ~20 ms |
 
-### Current Implementation Status (v2.8)
+### Current Implementation Status (v2.10)
 
-As of firmware v2.8, all local safety layers are active:
+As of firmware v2.10, all local safety layers are active:
 
 - **Layer 1 — HC-SR04**: active, reads every 5 cycles (~100 ms), FAULT if < 200 mm.
+  Driver v1.2: `with_timeout(1_750 µs)` limits blocking to ~1.75 ms; returns `Result`.
 - **Layer 2 — VL53L0X**: active, soft I2C D42/D43, FAULT si distancia < 150 mm.
+  Driver v1.1: `read_mm()` returns `Result<u16, SensorError>`.
   Distancia reportada en campo `DIST` del frame TLM.
 - **Layer 3 — RPi5**: active via USART0 (USB) at 115200, full MSM protocol.
   Cambio a USART3 (D14/D15) para producción pendiente de flash.
@@ -304,24 +306,42 @@ distancia frontal, tensión y corriente de batería. Ver §9 para el formato com
 
 ## 5. HC-SR04 Polling vs Interrupt-Based Measurement
 
-### Current Implementation (v2.1) — Polling Every 5 Cycles
+### Current Implementation (v1.2) — Timeout + Result API
 
 The HC-SR04 driver (`sensors/hc_sr04.rs`) uses busy-wait loops to measure
 echo pulse duration:
 
 ```rust
-while self.echo.is_low()  { count += 1; if count > 20_000 { return None; } }
-while self.echo.is_high() { duration_us += 1; delay_us(1); if > 30_000 { return None; } }
+while self.echo.is_low()  { count += 1; if count > 30_000 { return Err(SensorError::Timeout); } }
+while self.echo.is_high() { duration_us += 1; delay_us(1); if duration_us > self.echo_timeout_us { return Err(SensorError::Timeout); } }
 ```
 
-In the worst case (no echo / out of range) this blocks for **up to 30 ms**,
-exceeding the 20 ms main loop period and delaying watchdog, UART, and motor
-updates.
+Without a limit, an obstacle at ~4 m causes ~30 ms of blocking, exceeding
+the 20 ms main loop period.
 
-**Chosen mitigation**: read HC-SR04 every `HC_READ_PERIOD = 5` cycles
-(~100 ms). At 0.5 m/s the rover travels ~5 cm between readings — acceptable
-for the emergency stop use case (threshold: 20 cm). The constant
-`HC_READ_PERIOD` in `main.rs` can be tuned if the rover's max speed changes.
+**Two mitigations applied:**
+
+1. **`with_timeout(echo_timeout_us)`** — builder that limits the echo-wait
+   loop to the range that matters for safety. The firmware configures
+   `HC_ECHO_TIMEOUT_US = 1_750` µs (`src/config.rs`), corresponding to
+   ~300 mm (1.5× the emergency threshold). This reduces max blocking from
+   ~30 ms to ~1.75 ms.
+
+2. **`HC_READ_PERIOD = 5`** — the sensor is read every 5 cycles (~100 ms)
+   instead of every cycle, since each measurement still adds latency.
+   At 0.5 m/s the rover travels ~5 cm between readings — acceptable for
+   the 200 mm emergency threshold.
+
+**Result API**: `measure_mm()` returns `Result<u16, SensorError>`:
+- `Ok(mm)` — valid distance.
+- `Err(Timeout)` — echo did not arrive within the configured window (object
+  out of range — not an emergency).
+- `Err(OutOfRange)` — distance is outside the HC-SR04's 2–4000 mm spec.
+
+The previous `last_valid` / `consecutive_errors` caching was removed.
+It was silently masking read failures and making stale data invisible to
+the caller. The caller (`main.rs`) already handles transient errors by
+simply skipping the FAULT trigger if no `Ok` is received.
 
 ### Future Migration: Interrupt-Based Measurement
 

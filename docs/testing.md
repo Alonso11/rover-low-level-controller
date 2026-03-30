@@ -1,4 +1,4 @@
-<!-- Version: v1.0 -->
+<!-- Version: v1.1 -->
 # Testing Guide — rover-low-level-controller
 
 Este documento explica cómo verificar que el código no se rompe tras cada
@@ -54,14 +54,14 @@ test test_parse_ping ... ok
 test result: ok. 46 passed; 0 failed
 
 [test_native] ── sensors_test ────────────────────────
-running 38 tests
+running 57 tests
 ...
-test result: ok. 38 passed; 0 failed
+test result: ok. 57 passed; 0 failed
 
 [test_native] ── motor_logic_test ────────────────────────
-running 1 test
+running 28 tests
 ...
-test result: ok. 1 passed; 0 failed
+test result: ok. 28 passed; 0 failed
 
 [test_native] OK Todas las suites pasaron (3/3)
 ```
@@ -96,11 +96,11 @@ RUSTFLAGS="-C panic=unwind" \
 
 ## 3. Suites de tests x86
 
-| Suite | Archivo | Qué cubre |
-|-------|---------|-----------|
-| `state_machine_test` | `tests/state_machine_test.rs` | Parser de comandos MSM, todas las transiciones de estado, watchdog, format_response, TLM con/sin sensores |
-| `sensors_test` | `tests/sensors_test.rs` | ACS712 conversión ADC→mA, LM335 conversión ADC→°C, NTC interpolación LUT, umbrales Warn/Limit/Fault |
-| `motor_logic_test` | `tests/motor_logic_test.rs` | Speed mapping, signos de dirección, ErasedMotor |
+| Suite | Tests | Archivo | Qué cubre |
+|-------|-------|---------|-----------|
+| `state_machine_test` | 46 | `tests/state_machine_test.rs` | Parser de comandos MSM, todas las transiciones de estado, watchdog, format_response, TLM con/sin sensores |
+| `sensors_test` | 57 | `tests/sensors_test.rs` | ACS712 conversión ADC→mA, LM335 conversión ADC→°C, NTC interpolación LUT, umbrales Warn/Limit/Fault |
+| `motor_logic_test` | 28 | `tests/motor_logic_test.rs` | Speed mapping, signos de dirección L298N/BTS7960, SixWheelRover drive diferencial, ErasedMotor |
 
 ### Añadir un test nuevo
 
@@ -132,7 +132,7 @@ Valida el protocolo de comunicación de extremo a extremo:
 python3 tests/hardware/test_msm_protocol.py [/dev/ttyUSB0]
 ```
 
-**Firmware requerido:** firmware principal (`main.rs`) v2.8+
+**Firmware requerido:** firmware principal (`main.rs`) v2.10+
 
 **Qué verifica (13 tests):**
 1. Conexión serial al Arduino
@@ -198,7 +198,7 @@ python3 tests/hardware/test_msm_protocol.py
 
 - [ ] `./test_native.sh` — todas las suites en verde
 - [ ] `test_msm_protocol.py` — 13/13 tests en hardware
-- [ ] Inspección visual de telemetría TLM (formato v2.8 correcto)
+- [ ] Inspección visual de telemetría TLM (formato v2.10 correcto)
 - [ ] Verificar watchdog: esperar >2 s sin PING → ERR:WDOG
 
 ---
@@ -236,4 +236,4 @@ error: Ensure that you are using an AVR target!
 | `error: cannot find module arduino_hal` | Falta `--no-default-features` | Añadir el flag |
 | `SIGSEGV` / `illegal instruction` en tests | `panic=abort` vs `panic=unwind` | Añadir `RUSTFLAGS="-C panic=unwind"` |
 | Puerto serie no encontrado | Arduino desconectado o driver no cargado | `ls /dev/ttyUSB*` y verificar udev |
-| `test_msm_protocol.py` timeout en test 13 | TLM no llega en 2 s | Verificar que el firmware es v2.8+ (TLM cada ~1 s) |
+| `test_msm_protocol.py` timeout en test 13 | TLM no llega en 2 s | Verificar que el firmware es v2.10+ (TLM cada ~1 s) |

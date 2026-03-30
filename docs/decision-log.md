@@ -265,15 +265,35 @@ TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:...<B5>C:<DI
 
 ---
 
+---
+
+## Semana 4 — Auditoría de código y refactors (29 mar 2026)
+
+| Fecha | Decisión | Motivo |
+|---|---|---|
+| 2026-03-29 | Fix clock-stretch en `soft_i2c.rs`: `wait_scl_high()` con timeout de 500 half-periods (~2.5 ms) | Sin el timeout, un dispositivo I2C con clock-stretch podía colgar el loop principal indefinidamente; el VL53L0X estira el reloj durante las calibraciones internas |
+| 2026-03-29 | HC-SR04: añadir `with_timeout(echo_timeout_us)` builder y reducir de 30 000 µs a 1 750 µs | El eco podía bloquear ~30 ms (> ciclo de 20 ms); con `HC_ECHO_TIMEOUT_US = 1_750` solo se espera hasta ~300 mm, reduciendo el bloqueo a ~1.75 ms (17×) |
+| 2026-03-29 | Centralizar todas las constantes de firmware en `src/config.rs` | Las ~25 constantes dispersas en `main.rs` dificultaban ajustes de campo; el nuevo módulo agrupa por subsistema con documentación por constante, análogo a un fichero YAML de configuración para embedded `no_std` |
+| 2026-03-29 | Mover `SixWheelRover` de `motor_control::l298n` a `motor_control::mod.rs` | `SixWheelRover` solo depende del trait `Motor` (puro Rust) — no de `arduino-hal`; moverlo sin el gate AVR lo hace testeable en x86 junto con `MockMotor` |
+| 2026-03-29 | Reemplazar `Option<u16>` por `Result<u16, SensorError>` en todos los sensores de proximidad | `None` no distingue "sin dato aún" de "timeout" de "fuera de rango"; `Result` con `SensorError::NotReady/Timeout/OutOfRange/ChecksumError` hace el tipo de fallo explícito y `#[must_use]` |
+| 2026-03-29 | Eliminar `last_valid` y `consecutive_errors` del driver HC-SR04 | El caché silenciaba errores de lectura devolviendo datos obsoletos hasta 5 ciclos; el caller (`main.rs`) ya maneja el caso de error ignorando el FAULT cuando no hay `Ok` — el caché era redundante y opaco |
+| 2026-03-29 | Expandir `motor_logic_test.rs` de 1 test a 28 | La suite tenía cobertura casi nula; los 28 tests cubren aritmética speed→duty (L298N/BTS7960), lógica de dirección, contrato del trait Motor via MockMotor, SixWheelRover diferencial y ErasedMotor |
+| 2026-03-29 | Expandir `sensors_test.rs` de 38 tests a 57 | Añadidos tests para: ACS712 variante 05A, corriente negativa, calibrate_zero, cero de ADC; LM335 temperatura negativa y extremos de escala; NTC puntos exactos de tabla, interpolación, ADC fuera de rango |
+| 2026-03-29 | Documentar guía de testing en `docs/testing.md` | Flags de compilación para x86 eran no obvios (`RUSTFLAGS`, `+nightly`, `--no-default-features`, `--test` vs `--tests`) — la guía centraliza el conocimiento para evitar repetir el debugging |
+
+---
+
 ## Pendiente (al 29 mar 2026)
 
 | Tarea | Bloqueante | Prioridad |
 |---|---|---|
-| Flash v2.7 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible | Alta — bloquea todas las pruebas de integración |
+| Flash v2.10 al Arduino y verificar protocolo MSM por serial | Hardware físico disponible | Alta — bloquea todas las pruebas de integración |
 | Calibrar `zero_mv` del ACS712 con motores desconectados | Flash pendiente | Alta — afecta precisión de Warn/Limit |
 | Calibrar offset NTC de baterías en hardware real | Flash pendiente | Alta — offsets actuales = 0 |
 | Verificar umbrales OC Warn/Limit (1200/1600 mA) en hardware real | Flash + calibración pendiente | Media |
 | ~~Añadir voltage monitoring — EPS-REQ-001~~ | ✅ INA226 integrado en v2.8 | — |
+| ~~Centralizar constantes en config.rs~~ | ✅ Hecho en v2.9 | — |
+| ~~Sensores proximidad: Option → Result~~ | ✅ Hecho en v2.10 | — |
 | Cambiar USART0 → USART3 para producción con RPi5 | Flash + validación pendiente | Alta — bloquea integración con Nodo A |
 | PR `feature/msm-main-integration` → `debug` | Flash + validación pendiente | Media |
 | Reescribir `servo.rs` con Timer1/OC1A (eliminar `delay_us` bloqueante) | — | Media — afecta estabilidad ISRs |

@@ -1,5 +1,5 @@
 # Sensor ToF VL53L0X (GY-VL53L0XV2)
-<!-- Version: v1.0 -->
+<!-- Version: v1.1 -->
 
 El **GY-VL53L0XV2** es un módulo basado en el chip ST VL53L0X — sensor
 de distancia ToF (Time-of-Flight) de un solo punto con láser VCSEL 940 nm.
@@ -42,7 +42,7 @@ con el bus TWI hardware (D20/D21 = INT0/INT1 = encoders FR/FL).
 
 ## Integración en el Firmware
 
-- Driver: `src/sensors/vl53l0x.rs`
+- Driver: `src/sensors/vl53l0x.rs` (v1.1)
 - Bus: `src/sensors/soft_i2c.rs` (D42/D43, bit-bang)
 - Integrado en `main.rs` v2.6+
 
@@ -61,15 +61,17 @@ La distancia se lee en cada ciclo del loop (~20 ms) junto con el HC-SR04.
 Umbral de emergencia: **FAULT si distancia < 150 mm**.
 
 ```rust
-// Fragmento de main.rs
-if let Some(dist) = vl53.read_range_mm() {
-    sensor_frame.dist_mm = dist;
-    if dist < VL53_FAULT_MM {          // 150 mm
-        msm.update_distance(dist);      // → FAULT
+// Fragmento de main.rs — read_mm() devuelve Result<u16, SensorError>
+if let Ok(mm) = tof.read_mm() {
+    sensor_frame.dist_mm = mm;
+    if mm < TOF_EMERGENCY_MM {          // 150 mm
+        let resp = msm.process(Command::Fault);
+        sync_drive!(rover, msm);
+        iface.send_response(format_response(resp, &mut resp_buf));
     }
-} else {
-    sensor_frame.dist_mm = 0;           // 0 = sin lectura en TLM
 }
+// Err(NotReady) → no hay muestra nueva (ignorar, no es error)
+// Err(OutOfRange) → sin objetivo en rango (ignorar, no es obstacle)
 ```
 
 El valor `dist_mm` se incluye en el campo `DIST` del frame TLM.
