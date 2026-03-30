@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 //! # Driver para el sensor ultrasónico HC-SR04.
 //!
 //! Este driver permite medir distancias utilizando el sensor ultrasónico HC-SR04.
@@ -23,7 +23,7 @@
 
 use arduino_hal::port::Pin;
 use arduino_hal::port::mode::{Input, Output, AnyInput};
-use crate::sensors::ProximitySensor;
+use crate::sensors::{ProximitySensor, SensorError};
 
 /// Estructura para el sensor ultrasónico HC-SR04.
 ///
@@ -33,10 +33,6 @@ pub struct HCSR04<TPIN, EPIN> {
     trigger: Pin<Output, TPIN>,
     /// Pin de entrada para medir la duración del pulso de retorno.
     echo: Pin<Input<AnyInput>, EPIN>,
-    /// Última distancia válida medida (mm).
-    last_valid: Option<u16>,
-    /// Contador de errores consecutivos para invalidar la lectura.
-    consecutive_errors: u8,
     /// Tiempo máximo de espera del eco en µs.
     /// Limita el bloqueo del loop principal. Ver `with_timeout()`.
     echo_timeout_us: u32,
@@ -54,8 +50,6 @@ where
         Self {
             trigger,
             echo,
-            last_valid: None,
-            consecutive_errors: 0,
             echo_timeout_us: 30_000,
         }
     }
@@ -63,8 +57,7 @@ where
     /// Restringe el tiempo máximo de espera del eco (builder).
     ///
     /// Solo detecta objetos dentro del rango `timeout_us × 1715 / 10 000` mm.
-    /// Los objetos más lejanos provocan `handle_error()` (retorna `last_valid`
-    /// hasta 5 errores consecutivos, luego `None`).
+    /// Los objetos más lejanos provocan `Err(SensorError::Timeout)`.
     ///
     /// # Ejemplo
     /// ```ignore
@@ -77,11 +70,11 @@ where
     }
 
     /// Realiza una medición de distancia enviando un pulso.
-    /// 
-    /// Retorna la distancia calculada en milímetros (mm).
-    /// Si hay un fallo puntual, retorna la última lectura válida.
-    /// Retorna `None` si hay demasiados errores consecutivos o rango inválido.
-    pub fn measure_mm(&mut self) -> Option<u16> {
+    ///
+    /// Retorna `Ok(mm)` con la distancia en milímetros, o un error específico:
+    /// - `Err(Timeout)` — el eco no llegó dentro del tiempo configurado.
+    /// - `Err(OutOfRange)` — distancia fuera del rango válido del HC-SR04 (2–4 000 mm).
+    pub fn measure_mm(&mut self) -> Result<u16, SensorError> {
         // Aseguramos que el trigger esté en BAJO antes de iniciar el ciclo.
         self.trigger.set_low();
         arduino_hal::delay_us(10);
@@ -95,9 +88,9 @@ where
         let mut count = 0;
         while self.echo.is_low() {
             count += 1;
-            if count > 30000 { 
-                return self.handle_error();
-            } 
+            if count > 30000 {
+                return Err(SensorError::Timeout);
+            }
         }
 
         // Medimos cuánto tiempo permanece el pin Echo en ALTO.
@@ -107,34 +100,18 @@ where
             duration_us += 1;
             arduino_hal::delay_us(1);
             if duration_us > self.echo_timeout_us {
-                return self.handle_error();
+                return Err(SensorError::Timeout);
             }
         }
 
         // Cálculo de distancia: (Tiempo * Velocidad del Sonido) / 2
         let distance = (duration_us * 1715) / 10000;
-        
-        // El rango práctico del HC-SR04 es de 2cm a 400cm.
-        if distance > 4000 || distance < 2 {
-            self.handle_error()
-        } else {
-            self.consecutive_errors = 0;
-            let val = distance as u16;
-            self.last_valid = Some(val);
-            Some(val)
-        }
-    }
 
-    /// Gestiona un fallo de lectura devolviendo la última válida si es posible.
-    fn handle_error(&mut self) -> Option<u16> {
-        self.consecutive_errors += 1;
-        // Si hay más de 5 errores seguidos, invalidamos todo.
-        if self.consecutive_errors > 5 {
-            self.last_valid = None;
-            None
+        // El rango práctico del HC-SR04 es de 2 cm a 400 cm.
+        if distance > 4000 || distance < 2 {
+            Err(SensorError::OutOfRange)
         } else {
-            // Retornamos el último valor bueno para dar estabilidad.
-            self.last_valid
+            Ok(distance as u16)
         }
     }
 }
@@ -144,8 +121,7 @@ where
     TPIN: arduino_hal::port::PinOps,
     EPIN: arduino_hal::port::PinOps,
 {
-    /// Implementación de la interfaz común para obtener la distancia.
-    fn get_distance_mm(&mut self) -> Option<u16> {
+    fn get_distance_mm(&mut self) -> Result<u16, SensorError> {
         self.measure_mm()
     }
 }

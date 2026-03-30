@@ -1,4 +1,4 @@
-// Version: v2.9
+// Version: v2.10
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -291,7 +291,7 @@ fn main() -> ! {
         hc_counter = hc_counter.wrapping_add(1);
         if hc_counter >= HC_READ_PERIOD {
             hc_counter = 0;
-            if let Some(mm) = hcsr04.measure_mm() {
+            if let Ok(mm) = hcsr04.measure_mm() {
                 if mm < HC_EMERGENCY_MM {
                     let resp = msm.process(Command::Fault);
                     sync_drive!(rover, msm);
@@ -300,7 +300,7 @@ fn main() -> ! {
             }
             // VL53L0X: lectura no bloqueante — solo hay dato si el sensor está listo
             if tof.ready {
-                if let Some(mm) = tof.read_mm() {
+                if let Ok(mm) = tof.read_mm() {
                     sensor_frame.dist_mm = mm;
                     if mm < TOF_EMERGENCY_MM {
                         let resp = msm.process(Command::Fault);

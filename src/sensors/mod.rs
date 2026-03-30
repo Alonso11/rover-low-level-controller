@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 //! # Módulo de Sensores
 //!
 //! Este módulo contiene las implementaciones para los diferentes sensores del Rover,
@@ -47,8 +47,22 @@ pub use vl53l0x::VL53L0X;
 #[cfg(feature = "avr")]
 pub use ina226::INA226;
 
+/// Error de lectura de un sensor de proximidad.
+#[cfg(feature = "avr")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SensorError {
+    /// No hay medición nueva disponible — no fatal, reintentar en el próximo ciclo.
+    NotReady,
+    /// El sensor no respondió en el tiempo esperado.
+    Timeout,
+    /// La medición está fuera del rango de detección válido del sensor.
+    OutOfRange,
+    /// Los datos recibidos no superaron la verificación de integridad.
+    ChecksumError,
+}
+
 /// Interfaz común para sensores de proximidad/distancia.
 #[cfg(feature = "avr")]
 pub trait ProximitySensor {
-    fn get_distance_mm(&mut self) -> Option<u16>;
+    fn get_distance_mm(&mut self) -> Result<u16, SensorError>;
 }

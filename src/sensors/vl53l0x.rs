@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 //! # Driver VL53L0X — Sensor Time-of-Flight (GY-VL53L0XV2)
 //!
 //! Mide distancia por tiempo de vuelo láser (940 nm VCSEL).
@@ -32,6 +32,7 @@
 //! <https://github.com/pololu/vl53l0x-arduino>
 
 use super::soft_i2c::SoftI2C;
+use super::SensorError;
 
 // ─── Dirección I2C del VL53L0X ───────────────────────────────────────────────
 const ADDR: u8 = 0x29;
@@ -274,18 +275,17 @@ impl VL53L0X {
 
     /// Lee la distancia en mm si hay una medición disponible.
     ///
-    /// Retorna `None` si el sensor aún no tiene una nueva muestra lista.
     /// No bloquea — llamar periódicamente en el loop principal.
     ///
-    /// Valores típicos de error retornados por el sensor:
-    /// - `8190` / `8191` = sin objetivo detectado (fuera de rango)
-    pub fn read_mm(&self) -> Option<u16> {
+    /// - `Ok(mm)` — nueva medición lista, distancia en milímetros.
+    /// - `Err(NotReady)` — el sensor aún no tiene una muestra nueva.
+    /// - `Err(OutOfRange)` — el sensor reporta ≥ 8190 (sin objetivo en rango).
+    pub fn read_mm(&self) -> Result<u16, SensorError> {
         if self.rd(RESULT_INTERRUPT_STATUS) & 0x07 == 0 {
-            return None; // nueva muestra aún no disponible
+            return Err(SensorError::NotReady);
         }
         let mm = self.rd16(RESULT_RANGE_MM);
         self.wr(SYSTEM_INTERRUPT_CLEAR, 0x01);
-        // Filtrar lecturas de error (out of range)
-        if mm >= 8190 { None } else { Some(mm) }
+        if mm >= 8190 { Err(SensorError::OutOfRange) } else { Ok(mm) }
     }
 }
