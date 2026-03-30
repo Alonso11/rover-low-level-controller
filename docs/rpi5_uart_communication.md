@@ -154,7 +154,7 @@ Comandos en ASCII plano, terminados con `\n`. Buffer interno de **80 bytes**.
 |---------|------------|
 | `PING` | Keepalive — resetea watchdog Arduino (~2 s sin PING → FAULT) |
 | `STB` | Standby (motores parados) |
-| `EXP:<l>:<r>` | Explorar con velocidades 0–100 (ej: `EXP:80:80`) |
+| `EXP:<l>:<r>` | Explorar con velocidades -99–99 (positivo=avance, negativo=retroceso; ej: `EXP:80:80`) |
 | `AVD:L` | Girar izquierda (evasión) |
 | `AVD:R` | Girar derecha (evasión) |
 | `RET` | Retroceder |
