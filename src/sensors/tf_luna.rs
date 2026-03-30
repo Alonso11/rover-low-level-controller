@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 //! # Driver para el sensor LiDAR de corto rango TF-Luna.
 //!
 //! Este driver permite la comunicación serie con el sensor LiDAR TF-Luna de Benewake.
@@ -7,7 +7,7 @@
 
 use arduino_hal::hal::usart::Usart;
 use arduino_hal::prelude::*;
-use crate::sensors::ProximitySensor;
+use crate::sensors::{ProximitySensor, SensorError};
 
 /// Estructura para el sensor LiDAR TF-Luna.
 /// 
@@ -34,12 +34,14 @@ where
     }
 
     /// Intenta leer un paquete de datos completo del sensor.
-    /// 
+    ///
     /// Formato del frame (9 bytes):
-    /// [0x59, 0x59, Dist_L, Dist_H, Strength_L, Strength_H, Temp_L, Temp_H, Checksum]
-    /// 
-    /// Retorna la distancia en milímetros (mm).
-    pub fn read_packet(&mut self) -> Option<u16> {
+    /// `[0x59, 0x59, Dist_L, Dist_H, Strength_L, Strength_H, Temp_L, Temp_H, Checksum]`
+    ///
+    /// - `Ok(mm)` — distancia en milímetros.
+    /// - `Err(Timeout)` — no llegaron bytes suficientes en el tiempo esperado.
+    /// - `Err(ChecksumError)` — el frame llegó completo pero no supera la verificación.
+    pub fn read_packet(&mut self) -> Result<u16, SensorError> {
         let mut header_count = 0;
         let mut timeout = 0;
 
@@ -53,7 +55,7 @@ where
                 }
             }
             timeout += 1;
-            if timeout > 2000 { return None; }
+            if timeout > 2000 { return Err(SensorError::Timeout); }
         }
 
         // Fase 2: Lectura de los datos restantes (7 bytes).
@@ -70,22 +72,22 @@ where
                     break;
                 }
                 sub_timeout += 1;
-                if sub_timeout > 1000 { return None; }
+                if sub_timeout > 1000 { return Err(SensorError::Timeout); }
             }
         }
 
         // Fase 3: Validación del Checksum (Byte 9).
         let checksum = data[6];
         if (sum & 0xFF) as u8 != checksum {
-            return None; // Frame corrupto o error de transmisión.
+            return Err(SensorError::ChecksumError);
         }
 
         // Fase 4: Interpretación de la distancia (Bytes 2 y 3).
         // El valor viene en centímetros (cm).
         let dist_cm = (data[1] as u16) << 8 | (data[0] as u16);
-        
+
         // Convertimos a milímetros para consistencia con el Trait ProximitySensor.
-        Some(dist_cm * 10)
+        Ok(dist_cm * 10)
     }
 }
 
@@ -94,8 +96,7 @@ where
     USART: arduino_hal::hal::usart::UsartOps<arduino_hal::hal::Atmega, RX, TX>,
     CLOCK: arduino_hal::hal::clock::Clock,
 {
-    /// Obtiene la distancia actual del sensor LiDAR en mm.
-    fn get_distance_mm(&mut self) -> Option<u16> {
+    fn get_distance_mm(&mut self) -> Result<u16, SensorError> {
         self.read_packet()
     }
 }

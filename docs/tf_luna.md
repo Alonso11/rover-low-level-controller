@@ -1,5 +1,13 @@
 # Sensor LiDAR TF-Luna
 
+> **OBSOLETO — componente no adquirido.**
+> El TF-Luna fue sustituido por el **GY-VL53L0XV2** (ST VL53L0X) al no estar
+> disponible en inventario. El driver `src/sensors/tf_luna.rs` se mantiene
+> para referencia y posible uso futuro si se adquiere el componente.
+> Ver `docs/decision-log.md` §Semana 4 — Cambio TF-Luna → VL53L0X.
+> La documentación activa del sensor de distancia táctica está en
+> `docs/the_pins_connections.md` §7 (VL53L0X, D42/D43 soft I2C).
+
 El **TF-Luna** es un sensor LiDAR de un solo punto, basado en el principio ToF (Time of Flight). Utiliza una fuente de luz infrarroja de 850nm para medir distancias con alta precisión y frecuencia.
 
 ## Especificaciones Técnicas
@@ -52,8 +60,12 @@ Se utiliza el puerto **Serial 2** del Mega para evitar interferencias con la com
 ```rust
 let serial2 = arduino_hal::Usart::new(dp.USART2, pins.d17.into_floating_input(), pins.d16.into_output(), 115200.into());
 let mut tf_luna = TFLuna::new(serial2);
-if let Some(dist_mm) = tf_luna.get_distance_mm() {
-    // Uso de la distancia en mm
+// get_distance_mm() devuelve Result<u16, SensorError>
+match tf_luna.get_distance_mm() {
+    Ok(dist_mm)                       => { /* distancia válida en mm */ }
+    Err(SensorError::Timeout)         => { /* sensor no respondió a tiempo */ }
+    Err(SensorError::ChecksumError)   => { /* frame recibido pero corrupto */ }
+    _                                 => {}
 }
 ```
 
