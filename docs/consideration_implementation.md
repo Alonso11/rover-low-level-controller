@@ -613,7 +613,7 @@ El rover genera los siguientes datos de estado que la RPi5 necesita recibir:
 TLM:<SAFETY>:<STALL>:<TS>ms:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm\n
 ```
 - Un solo frame periódico, fácil de parsear en RPi5
-- Requiere `RESP_BUF` de 120 bytes
+- Requiere `RESP_BUF` de 160 bytes (longitud máxima del frame TLM extendido ~130 bytes + margen)
 - La `SensorFrame` vive en `state_machine` para mantenerse testeable en x86
 
 **Opción B — SEN compacto separado**
