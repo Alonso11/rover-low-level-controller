@@ -1,4 +1,4 @@
-// Version: v1.3
+// Version: v1.4
 #![no_std]
 #![cfg_attr(target_arch = "avr", feature(abi_avr_interrupt))]
 
@@ -22,3 +22,6 @@ pub mod sensors;
 
 // Módulo de lógica pura (sin HAL) — siempre disponible, testeable en x86.
 pub mod state_machine;
+
+// Constantes de configuración — sin dependencias de HAL, siempre disponibles.
+pub mod config;

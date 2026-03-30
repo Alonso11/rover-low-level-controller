@@ -1,4 +1,4 @@
-// Version: v2.8
+// Version: v2.9
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -37,7 +37,9 @@
 use panic_halt as _;
 use arduino_hal::simple_pwm::{IntoPwmPin, Prescaler, Timer2Pwm, Timer3Pwm, Timer4Pwm};
 use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuffer};
-use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
+use rover_low_level_controller::motor_control::l298n::L298NMotor;
+use rover_low_level_controller::motor_control::SixWheelRover;
+use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226};
@@ -46,110 +48,6 @@ use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
     SafetyState, SensorFrame,
 };
-
-// ─── Constantes ──────────────────────────────────────────────────────────────
-
-const TLM_PERIOD: u8    = 50;  // ciclos entre telemetría (~1 s a 20 ms/ciclo)
-const LOOP_MS: u32      = 20;
-const RESP_BUF: usize   = 160; // TLM extendido: ...±36000mV:±32768mA:±30000×6:±100C:±100×6C:8189mm ≈ 140 bytes
-
-/// Cada cuántos ciclos leer el HC-SR04 (~100 ms).
-/// El driver es bloqueante; ver consideration_implementation.md §5.
-const HC_READ_PERIOD: u8  = 5;
-
-/// Distancia de emergencia HC-SR04 en mm (20 cm → FAULT inmediato).
-const HC_EMERGENCY_MM: u16 = 200;
-
-/// Timeout de eco HC-SR04 en µs.
-///
-/// Limita el bloqueo del loop principal. Sin límite, un objeto a ~4 m provoca
-/// ~23 ms de busy-wait, excediendo el ciclo de 20 ms. Con este valor solo se
-/// espera el eco de objetos hasta ~300 mm (1.5× el umbral de emergencia), lo
-/// que reduce el bloqueo máximo de ~30 ms a ~1.75 ms.
-///
-/// Fórmula: `distance_mm × 10_000 / 1_715`.
-/// 300 mm → 1 749 µs; redondeado a 1 750 µs.
-const HC_ECHO_TIMEOUT_US: u32 = 1_750;
-
-/// Distancia de emergencia VL53L0X en mm (15 cm → FAULT inmediato).
-/// Umbral más ajustado que HC-SR04 gracias a la mayor precisión del ToF láser.
-const TOF_EMERGENCY_MM: u16 = 150;
-
-/// Ciclos sin movimiento de encoder para declarar stall (~1 s a 20 ms/ciclo).
-/// Coincide con el umbral de DriveChannel::check_stall en controller/mod.rs.
-const STALL_THRESHOLD: u16 = 50;
-
-/// Velocidad mínima absoluta (%) para activar la detección de stall.
-/// Por debajo de este valor se asume que el motor está intencionalmente parado.
-const STALL_SPEED_MIN: i16 = 20;
-
-/// Cada cuántos ciclos leer los sensores analógicos (~500 ms).
-const SEN_READ_PERIOD: u8 = 25;
-
-/// Umbrales base para driver L298N (2 A continuo, 3 A pico).
-const OC_WARN_L298N:  i32 = 1_200; // 60 % de 2A
-const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2A
-const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2A
-
-/// Umbrales base para driver BTS7960 (ajustar según motor real tras calibración).
-#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
-const OC_WARN_BTS:  i32 = 8_000;  // ~20 % del pico — indicativo
-#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
-const OC_LIMIT_BTS: i32 = 12_000; // ~28 % del pico
-#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
-const OC_FAULT_BTS: i32 = 15_000; // ~35 % del pico
-
-/// Umbrales de sobrecorriente por motor [FR, FL, CR, CL, RR, RL].
-/// Seleccionados en tiempo de compilación según el feature activo:
-///   (default)     → all-l298n:     todos OC_*_L298N
-///   mixed-drivers → FR/FL=L298N, CR/CL/RR/RL=BTS7960
-///   all-bts7960   → todos OC_*_BTS
-#[cfg(feature = "mixed-drivers")]
-const OC_WARN:  [i32; 6] = [OC_WARN_L298N,  OC_WARN_L298N,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS];
-#[cfg(feature = "mixed-drivers")]
-const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N, OC_LIMIT_L298N, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS];
-#[cfg(feature = "mixed-drivers")]
-const OC_FAULT: [i32; 6] = [OC_FAULT_L298N, OC_FAULT_L298N, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS];
-
-#[cfg(feature = "all-bts7960")]
-const OC_WARN:  [i32; 6] = [OC_WARN_BTS;  6];
-#[cfg(feature = "all-bts7960")]
-const OC_LIMIT: [i32; 6] = [OC_LIMIT_BTS; 6];
-#[cfg(feature = "all-bts7960")]
-const OC_FAULT: [i32; 6] = [OC_FAULT_BTS; 6];
-
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
-const OC_WARN:  [i32; 6] = [OC_WARN_L298N;  6];
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
-const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N; 6];
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
-const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
-
-/// Velocidad máxima (%) aplicada a todos los motores cuando safety == Limit.
-const LIMIT_SPEED_CAP: i16 = 60;
-
-/// Umbrales de temperatura de batería 18650 en °C.
-/// Thermal runaway inicia ~80–90 °C; márgenes conservadores.
-const BATT_WARN_C:  i32 = 45; // operación prolongada a alta carga
-const BATT_LIMIT_C: i32 = 55; // reducir carga
-const BATT_FAULT_C: i32 = 65; // detener rover — peligro inmediato
-
-/// Resistencia de shunt del INA226 en mΩ.
-/// Ajustar según el componente instalado: 10 mΩ = 0.01 Ω.
-/// Calibrar antes de confiar en las lecturas de corriente.
-const INA226_SHUNT_MOHM: u16 = 10;
-
-/// Número de muestras ADC a promediar por canal.
-/// El ATmega2560 tiene un solo ADC multiplexado: cada muestra toma ~104 µs.
-/// 8 muestras × 7 canales = ~5.8 ms bloqueantes cada SEN_READ_PERIOD ciclos.
-const SEN_SAMPLES: u8 = 8;
-
-/// Muestras ADC para el chequeo rápido de sobrecorriente (solo detección de Fault).
-/// 2 muestras × 6 canales × ~104 µs = ~1.25 ms bloqueantes cada SEN_FAST_PERIOD ciclos.
-const SEN_FAST_SAMPLES: u8 = 2;
-
-/// Cada cuántos ciclos ejecutar el chequeo rápido (~60 ms a 20 ms/ciclo).
-const SEN_FAST_PERIOD: u8 = 3;
 
 // ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
 //
