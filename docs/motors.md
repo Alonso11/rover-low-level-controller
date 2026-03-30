@@ -30,8 +30,8 @@ assignment uses three separate timers — one per L298N driver:
 
 | Motor | Timer | PWM Pin | Puerto | Direction Pins | Separador |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Front Right** | Timer 2 | D9  (OC2B) | PH6 | D22, D23 | — |
-| **Front Left**  | Timer 2 | D10 (OC2A) | PB4 | D24, D25 | D26, D27 libres |
+| **Front Right** | Timer 2 | D9  (OC2B) | PH6 | D23, D25 | — |
+| **Front Left**  | Timer 2 | D10 (OC2A) | PB4 | D22, D24 | D26, D27 libres |
 | **Center Right**| Timer 3 | D5  (OC3A) | PE3 | D28, D29 | — |
 | **Center Left** | Timer 4 | D6  (OC4A) | PH3 | D30, D31 | D32, D33 libres |
 | **Rear Right**  | Timer 4 | D7  (OC4B) | PH4 | D34, D35 | — |
