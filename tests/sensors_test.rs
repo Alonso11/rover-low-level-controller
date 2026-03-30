@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 // Pruebas unitarias de los drivers analógicos ACS712, LM335 y NTCThermistor.
 // Se ejecutan en PC sin necesidad del Arduino.
 // Comando: ./test_native.sh  (o ver test_native.sh para el comando completo)
@@ -131,6 +131,60 @@ fn test_acs712_new_es_alias_30a() {
     assert_eq!(a.read_ma(647), b.read_ma(647));
 }
 
+// ─── ACS712 — casos adicionales ──────────────────────────────────────────────
+
+#[test]
+fn test_acs712_05a_negative_current() {
+    // ACS712-05A también soporta corriente negativa
+    // −2 A → V = 2500 − 2×185 = 2130 mV → ADC = (2130×1023)/5000 = 436
+    let acs = ACS712::new_05a();
+    let ma = acs.read_ma(436);
+    assert!((ma + 2000).abs() < 30, "esperado ~−2000 mA, got {}", ma);
+}
+
+#[test]
+fn test_acs712_with_zero_mv_usa_sensibilidad_30a() {
+    // with_zero_mv siempre crea instancia 30A (66 mV/A, ~74 mA/count)
+    // 05A sería 185 mV/A (~27 mA/count) → menor valor por count
+    let acs_custom = ACS712::with_zero_mv(2500);
+    let acs_05     = ACS712::new_05a();
+    let step_custom = acs_custom.read_ma(513).abs(); // 1 count sobre zero
+    let step_05     = acs_05.read_ma(513).abs();
+    assert!(step_custom > step_05,
+        "with_zero_mv debe usar sensibilidad 30A (más mA/count): custom={} 05a={}", step_custom, step_05);
+}
+
+#[test]
+fn test_acs712_calibrate_zero_preserva_sensibilidad_05a() {
+    // calibrate_zero() en una instancia 05A no cambia la sensibilidad
+    let acs_cal = ACS712::new_05a().calibrate_zero(2480);
+    let acs_30  = ACS712::with_zero_mv(2480); // 30A, mismo zero
+    let adc = 525u16;
+    // 05A da menos mA/count que 30A (más sensible al voltaje, menor corriente)
+    assert!(acs_cal.read_ma(adc).abs() < acs_30.read_ma(adc).abs(),
+        "05A calibrado debe dar menos mA/count que 30A");
+}
+
+#[test]
+fn test_acs712_overcurrent_umbral_cero() {
+    // Cualquier corriente no nula supera un umbral de 0 mA
+    let acs = ACS712::new();
+    assert!(acs.is_overcurrent(1, 0));
+    assert!(acs.is_overcurrent(-1, 0));
+    assert!(!acs.is_overcurrent(0, 0)); // exactamente 0 no supera > 0
+}
+
+#[test]
+fn test_acs712_formula_rounding_en_zero_adc() {
+    // zero_adc = (2500*1023 + 2500) / 5000 = 2560000/5000 = 512
+    // ADC=512 con zero_mv=2500 debe dar exactamente 0 mA
+    let acs = ACS712::new();
+    assert_eq!(acs.read_ma(512), 0);
+    // Verificar también con 05A
+    let acs_05 = ACS712::new_05a();
+    assert_eq!(acs_05.read_ma(512), 0);
+}
+
 // ─── LM335 ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -194,6 +248,51 @@ fn test_lm335_zero_offset_unchanged() {
     let lm_default = LM335::new();
     let lm_zero    = LM335::with_offset(0);
     assert_eq!(lm_default.read_celsius(610), lm_zero.read_celsius(610));
+}
+
+// ─── LM335 — casos adicionales ───────────────────────────────────────────────
+
+#[test]
+fn test_lm335_negative_celsius() {
+    // −10 °C = 263 K → V = 2630 mV → ADC = (2630×1023)/5000 = 538
+    // V_recalc = (538×5000)/1023 = 2629 mV → T_K = 262 → T_C = −11
+    // La truncación entera introduce 1 K de error — toleramos ±2 °C
+    let lm = LM335::new();
+    let t = lm.read_celsius(538);
+    assert!((t - (-10)).abs() <= 2, "esperado ~−10 °C, got {}", t);
+}
+
+#[test]
+fn test_lm335_adc_zero_extremo() {
+    // ADC=0 → V=0 → T=0 K → T=−273 °C
+    let lm = LM335::new();
+    assert_eq!(lm.read_celsius(0), -273);
+}
+
+#[test]
+fn test_lm335_adc_max_extremo() {
+    // ADC=1023 → V=5000 mV → T=500 K → T=227 °C
+    let lm = LM335::new();
+    assert_eq!(lm.read_celsius(1023), 227);
+}
+
+#[test]
+fn test_lm335_monotone() {
+    // Temperatura aumenta estrictamente con ADC
+    let lm = LM335::new();
+    let t1 = lm.read_celsius(400);
+    let t2 = lm.read_celsius(600);
+    let t3 = lm.read_celsius(800);
+    assert!(t1 < t2, "ADC 400 debe dar menos que ADC 600: {} < {}", t1, t2);
+    assert!(t2 < t3, "ADC 600 debe dar menos que ADC 800: {} < {}", t2, t3);
+}
+
+#[test]
+fn test_lm335_offset_en_temperatura_negativa() {
+    // Offset también se aplica en temperaturas negativas
+    let base = LM335::new().read_celsius(538);
+    let con_offset = LM335::with_offset(5).read_celsius(538);
+    assert_eq!(con_offset, base + 5);
 }
 
 // ─── NTCThermistor — AD36958 (B=3950, R25=10kΩ, Rpull=10kΩ) ─────────────────
@@ -303,6 +402,80 @@ fn test_ntc_temp_increases_as_adc_decreases() {
     // Propiedad fundamental: ADC menor → temperatura mayor
     let ntc = NTCThermistor::new();
     assert!(ntc.read_celsius(300) > ntc.read_celsius(500));
+}
+
+#[test]
+fn test_ntc_at_minus_10c() {
+    // ADC 874 → punto exacto de la tabla → −10 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(874);
+    assert!((t - (-10)).abs() <= 1, "esperado ~−10 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_at_minus_20c() {
+    // ADC 934 → punto exacto de la tabla → −20 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(934);
+    assert!((t - (-20)).abs() <= 1, "esperado ~−20 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_at_10c() {
+    // ADC 682 → punto exacto de la tabla → 10 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(682);
+    assert!((t - 10).abs() <= 1, "esperado ~10 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_at_20c() {
+    // ADC 568 → punto exacto de la tabla → 20 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(568);
+    assert!((t - 20).abs() <= 1, "esperado ~20 °C, got {}", t);
+}
+
+#[test]
+fn test_ntc_interpolation_extremo_frio() {
+    // ADC 900 entre 934 (−20 °C) y 874 (−10 °C):
+    // t = −20 + (−10−(−20)) × (934−900) / (934−874) = −20 + 10×34/60 = −20+5 = −15 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(900);
+    assert!((t - (-15)).abs() <= 1, "esperado ~−15 °C interpolado, got {}", t);
+}
+
+#[test]
+fn test_ntc_interpolation_extremo_caliente() {
+    // ADC 75 entre 87 (90 °C) y 66 (100 °C):
+    // t = 90 + (100−90) × (87−75) / (87−66) = 90 + 10×12/21 = 90+5 = 95 °C
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(75);
+    assert!((t - 95).abs() <= 1, "esperado ~95 °C interpolado, got {}", t);
+}
+
+#[test]
+fn test_ntc_adc_clamping_por_encima_de_1023() {
+    // ADC > 1023 se clampea a 1023 → por encima del primer punto de tabla → −20 °C
+    let ntc = NTCThermistor::new();
+    assert_eq!(ntc.read_celsius(2000), ntc.read_celsius(1023));
+    assert_eq!(ntc.read_celsius(1023), -20);
+}
+
+#[test]
+fn test_ntc_with_offset_zero_igual_que_new() {
+    let a = NTCThermistor::new();
+    let b = NTCThermistor::with_offset(0);
+    assert_eq!(a.read_celsius(512), b.read_celsius(512));
+    assert_eq!(a.read_celsius(268), b.read_celsius(268)); // 50 °C
+}
+
+#[test]
+fn test_ntc_offset_en_temperatura_alta() {
+    // El offset se aplica también en temperaturas altas (no solo a 25 °C)
+    let base       = NTCThermistor::new().read_celsius(66);   // 100 °C
+    let con_offset = NTCThermistor::with_offset(3).read_celsius(66);
+    assert_eq!(con_offset, base + 3);
 }
 
 #[test]
