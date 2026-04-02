@@ -130,3 +130,20 @@ pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
 pub const BATT_WARN_C:  i32 = 45; // operación prolongada a alta carga
 pub const BATT_LIMIT_C: i32 = 55; // reducir velocidad
 pub const BATT_FAULT_C: i32 = 65; // detener rover — peligro inmediato
+
+// ─── Plausibilidad de sensores de temperatura ─────────────────────────────────
+//
+// Si una lectura cae fuera de estos rangos, el sensor probablemente está
+// desconectado o falla (pin ADC flotante). Ignorar la lectura y emitir
+// "WARN:LM335_OOR" / "WARN:NTC_OOR" en lugar de usar el valor basura.
+//
+// LM335 desconectado (ADC=0): read_celsius(0) = -273 °C → silencioso, jamás alarma.
+// NTC desconectado  (ADC flotante alto ~1023): read_celsius(1023) = -20 °C → ídem.
+
+/// Rango plausible de temperatura ambiente para LM335.
+pub const AMBIENT_TEMP_MIN_C: i32 = -40;
+pub const AMBIENT_TEMP_MAX_C: i32 =  80;
+
+/// Rango plausible de temperatura para sensores NTC de baterías.
+pub const BATT_TEMP_MIN_C: i32 = -20;
+pub const BATT_TEMP_MAX_C: i32 = 100;

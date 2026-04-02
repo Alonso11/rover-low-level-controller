@@ -1,9 +1,10 @@
-// Version: v1.2
-// Pruebas unitarias de los drivers analógicos ACS712, LM335 y NTCThermistor.
+// Version: v1.3
+// Pruebas unitarias de los drivers analógicos ACS712, LM335 y NTCThermistor,
+// y de la función de plausibilidad check_temp_c.
 // Se ejecutan en PC sin necesidad del Arduino.
 // Comando: ./test_native.sh  (o ver test_native.sh para el comando completo)
 
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, check_temp_c};
 
 // ─── ACS712-30A ───────────────────────────────────────────────────────────────
 
@@ -488,4 +489,65 @@ fn test_ntc_batt_thresholds_order() {
     let fault_t = ntc.read_celsius(175); // ~65 °C
     assert!(warn_t < limit_t, "Warn debe ser < Limit");
     assert!(limit_t < fault_t, "Limit debe ser < Fault");
+}
+
+// ─── check_temp_c — validación de plausibilidad ──────────────────────────────
+
+#[test]
+fn test_check_temp_c_valor_normal() {
+    // Temperatura dentro del rango → Some(t)
+    assert_eq!(check_temp_c(25, -40, 80), Some(25));
+    assert_eq!(check_temp_c(0,  -40, 80), Some(0));
+    assert_eq!(check_temp_c(-40, -40, 80), Some(-40)); // límite inferior inclusivo
+    assert_eq!(check_temp_c(80,  -40, 80), Some(80));  // límite superior inclusivo
+}
+
+#[test]
+fn test_check_temp_c_lm335_desconectado() {
+    // LM335 con pin ADC=0 → read_celsius(0) = -273 °C → fuera de rango → None
+    let lm = LM335::new();
+    let t = lm.read_celsius(0);
+    assert_eq!(t, -273);
+    assert_eq!(check_temp_c(t, -40, 80), None, "LM335 desconectado debe dar None");
+}
+
+#[test]
+fn test_check_temp_c_lm335_adc_max() {
+    // LM335 con ADC=1023 → read_celsius(1023) = 227 °C → fuera de rango → None
+    let lm = LM335::new();
+    let t = lm.read_celsius(1023);
+    assert_eq!(t, 227);
+    assert_eq!(check_temp_c(t, -40, 80), None, "LM335 saturado debe dar None");
+}
+
+#[test]
+fn test_check_temp_c_ntc_desconectado_frio() {
+    // NTC con pin ADC flotante alto (>934) → read_celsius satura a -20 °C
+    // Con BATT_TEMP_MIN_C = -20 el límite es inclusivo → Some(-20)
+    // (diseño explícito: -20 está en tabla de NTC, es legítima)
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(1023);
+    assert_eq!(t, -20);
+    assert_eq!(check_temp_c(t, -20, 100), Some(-20));
+}
+
+#[test]
+fn test_check_temp_c_ntc_desconectado_caliente() {
+    // NTC con pin ADC=0 → read_celsius(0) = 100 °C → límite superior inclusivo → Some(100)
+    let ntc = NTCThermistor::new();
+    let t = ntc.read_celsius(0);
+    assert_eq!(t, 100);
+    assert_eq!(check_temp_c(t, -20, 100), Some(100));
+}
+
+#[test]
+fn test_check_temp_c_fuera_por_arriba() {
+    assert_eq!(check_temp_c(101, -20, 100), None);
+    assert_eq!(check_temp_c(200, -20, 100), None);
+}
+
+#[test]
+fn test_check_temp_c_fuera_por_abajo() {
+    assert_eq!(check_temp_c(-21, -20, 100), None);
+    assert_eq!(check_temp_c(-273, -20, 100), None);
 }

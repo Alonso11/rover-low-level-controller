@@ -1,4 +1,4 @@
-// Version: v1.2
+// Version: v1.3
 //! # Módulo de Sensores
 //!
 //! Este módulo contiene las implementaciones para los diferentes sensores del Rover,
@@ -65,4 +65,25 @@ pub enum SensorError {
 #[cfg(feature = "avr")]
 pub trait ProximitySensor {
     fn get_distance_mm(&mut self) -> Result<u16, SensorError>;
+}
+
+// ─── Validación de plausibilidad ─────────────────────────────────────────────
+
+/// Valida que una lectura de temperatura esté dentro de un rango físicamente
+/// plausible. Retorna `Some(t)` si es válida, `None` si probablemente indica
+/// sensor desconectado o averiado (equivalente a `sanitize_float` del STM32).
+///
+/// # Casos de fallo detectados
+/// - `LM335` con ADC=0 (pin flotante a GND): `read_celsius(0)` → -273 °C → `None`
+/// - `NTCThermistor` con ADC alto (~1023, pin flotante): `read_celsius(1023)` → -20 °C
+///   Si `min_c = -20` exactamente, el límite es inclusivo y pasa. Usar -19 para excluirlo.
+///
+/// # Ejemplo
+/// ```
+/// use rover_low_level_controller::sensors::check_temp_c;
+/// assert_eq!(check_temp_c(25, -40, 80), Some(25));
+/// assert_eq!(check_temp_c(-273, -40, 80), None);
+/// ```
+pub fn check_temp_c(t: i32, min_c: i32, max_c: i32) -> Option<i32> {
+    if t >= min_c && t <= max_c { Some(t) } else { None }
 }

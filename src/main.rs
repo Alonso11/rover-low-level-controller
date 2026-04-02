@@ -1,4 +1,4 @@
-// Version: v2.10
+// Version: v2.11
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -42,7 +42,7 @@ use rover_low_level_controller::motor_control::SixWheelRover;
 use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, check_temp_c};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
@@ -440,7 +440,11 @@ fn main() -> ! {
             }
 
             let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
-            sensor_frame.temp_c = lm335.read_celsius(raw_t);
+            let t_amb = lm335.read_celsius(raw_t);
+            match check_temp_c(t_amb, AMBIENT_TEMP_MIN_C, AMBIENT_TEMP_MAX_C) {
+                Some(t_valid) => sensor_frame.temp_c = t_valid,
+                None          => iface.log("WARN:LM335_OOR"),
+            }
 
             // INA226 — tensión y corriente total de batería
             if ina.ready {
@@ -458,7 +462,18 @@ fn main() -> ! {
                 adc_avg!(ntc_b3b_pin, adc, SEN_SAMPLES),
             ];
             for i in 0..6usize {
-                let t = ntc_batt[i].read_celsius(raw_batt[i]);
+                let t_raw = ntc_batt[i].read_celsius(raw_batt[i]);
+                // Validar plausibilidad antes de usar en clasificación de seguridad.
+                // NTC desconectado (ADC flotante) puede devolver -20 °C o 100 °C,
+                // valores que están en los extremos del rango válido. Si el ADC
+                // devuelve un valor imposible (fuera de -20..100) es basura → ignorar.
+                let t = match check_temp_c(t_raw, BATT_TEMP_MIN_C, BATT_TEMP_MAX_C) {
+                    Some(t_valid) => t_valid,
+                    None => {
+                        iface.log("WARN:NTC_OOR");
+                        continue; // no actualizar sensor_frame ni clasificar nivel
+                    }
+                };
                 sensor_frame.batt_temps[i] = t;
                 let level = if t > BATT_FAULT_C {
                     SafetyState::FaultStall
