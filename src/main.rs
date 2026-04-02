@@ -1,4 +1,4 @@
-// Version: v2.11
+// Version: v2.12
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -146,6 +146,35 @@ macro_rules! sync_drive {
     };
 }
 
+// ─── Causa de reset (MCUSR) ──────────────────────────────────────────────────
+//
+// El ATmega2560 expone en MCUSR los flags de la causa del último reset:
+//   PORF  (bit 0) — Power-on reset
+//   EXTRF (bit 1) — Reset externo (pin RESET o botón)
+//   BORF  (bit 2) — Brownout (bajada de Vcc bajo el umbral del BOD)
+//   WDRF  (bit 3) — Watchdog hardware disparó
+//
+// IMPORTANTE: hay que leer y limpiar MCUSR antes de cualquier otra init.
+// Si se inicializa el WDT antes de limpiar MCUSR, el flag WDRF puede
+// quedar activo y provocar un reset loop.
+//
+// Referencia: ATmega2560 Datasheet §11.4 (MCU Status Register).
+
+/// Lee y limpia MCUSR. Retorna una cadena ASCII estática con la causa.
+/// Si varios flags están activos (posible tras brownout + WDOG) reporta
+/// el de mayor severidad: WDOG > BROWN > EXT > POWERON.
+fn read_reset_cause() -> &'static str {
+    let mcusr = unsafe {
+        let val = (*avr_device::atmega2560::CPU::ptr()).mcusr().read().bits();
+        (*avr_device::atmega2560::CPU::ptr()).mcusr().write(|w| w.bits(0));
+        val
+    };
+    if mcusr & (1 << 3) != 0 { "RESET:WDOG"    }
+    else if mcusr & (1 << 2) != 0 { "RESET:BROWN"  }
+    else if mcusr & (1 << 1) != 0 { "RESET:EXT"    }
+    else                           { "RESET:POWERON" }
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[arduino_hal::entry]
@@ -276,7 +305,8 @@ fn main() -> ! {
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
 
-    iface.log("=== ROVER OLYMPUS v2.8 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC ===");
+    iface.log(read_reset_cause());
+    iface.log("=== ROVER OLYMPUS v2.12 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
