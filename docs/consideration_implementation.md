@@ -651,20 +651,19 @@ pub struct SensorFrame {
 }
 ```
 
-### Formato final (v2.8)
+### Formato final (v2.12)
 
 ```
-TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
-    ^──────^ ^─────^ ^────^ ^────────^ ^──────────────────────────────^ ^──^ ^────────────────────────────────^ ^──────^
-    safety   stall   tick   INA226      corrientes (mA) motores          temp  temps celdas (°C)                  dist
+TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm:<EL>:<ER>\n
 ```
 
 Ejemplo:
 ```
-TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm:60:62
 ```
 
-Longitud máxima estimada: 130 bytes → `RESP_BUF = 160`.
+Longitud máxima estimada: ~185 bytes → `RESP_BUF = 200`.
+Los campos EL/ER se añadieron en v2.12 para odometría (ver §10).
 
 ### Decisión: timestamp relativo (v2.7)
 
@@ -694,3 +693,80 @@ any `use arduino_hal::...` imports.
 
 Future work: consider a `--cfg test` feature flag to swap HAL types with
 stub implementations for host-side testing.
+
+---
+
+## 10. Odometría diferencial — Diseño de la extensión TLM y OdometryTracker
+
+### Contexto
+
+RNF-003 requiere precisión de navegación < 5 % del trayecto recorrido. El rover
+dispone de encoders Hall en los seis motores (ya integrados para stall detection),
+lo que hace viable la odometría diferencial sin sensor adicional.
+
+### Dónde integrar la cinemática: LLC vs. HLC
+
+La cinemática diferencial requiere `sin` y `cos` para actualizar la pose. Esto
+implica:
+
+- **AVR (ATmega2560, `no_std`)**: sin `libm`. Añadir `avr-libm` o una crate de
+  punto fijo aumenta el tamaño de flash y añade latencia al ciclo de 20 ms, que
+  ya tiene restricciones por ADC y sensores. La cinemática sería implementable
+  pero a un coste injustificado.
+- **RPi5 (Python)**: `math.sin`/`math.cos` disponibles en stdlib. El estado de
+  pose (`x_mm, y_mm, theta_rad`) puede persistir entre frames TLM sin
+  restricciones de memoria. La latencia de ~1 s entre frames TLM es más que
+  suficiente para el cómputo Python.
+
+**Decisión**: el LLC acumula conteos brutos y los incluye en el frame TLM. El
+HLC integra la cinemática en `OdometryTracker`.
+
+### Por qué acumuladores de lado y no por rueda
+
+Transmitir los seis conteos individuales habría añadido seis campos de hasta
+11 dígitos (≈ 72 bytes extra), excediendo el `RESP_BUF` de 160 bytes. El modelo
+diferencial solo necesita la distancia media de cada lado; la suma FL+CL+RL
+provee exactamente eso con dos campos en vez de seis.
+
+El denominador en la cinemática (`3 * TICKS_PER_REV`) absorbe el factor de la
+suma: no hay pérdida de información.
+
+### Por qué extender el frame TLM y no crear un mensaje nuevo
+
+Ver §9. Los mismos argumentos aplican: un único stream de telemetría simplifica
+el parser del HLC. Añadir al final preserva la compatibilidad: los parsers
+existentes que leen los 20 primeros campos no necesitan cambios hasta que
+activen la lectura de odometría.
+
+### Por qué TICKS_PER_REV es TBD
+
+El motor NFP-5840-31ZY-EN no documenta ni el PPR del encoder Hall ni la relación
+exacta de la reductora. El procedimiento de calibración es:
+
+```
+1. Elevar el rover con las ruedas en el aire.
+2. Girar una rueda una vuelta completa a mano.
+3. Leer ENCODER_Fn.get_counts() antes y después.
+4. Repetir 5 veces y promediar.
+5. Actualizar TICKS_PER_REV en config.rs y TICKS_PER_REV en olympus_hlc/config.py.
+   Ambos deben ser idénticos (el LLC no usa la constante para calcular nada;
+   solo el HLC la usa en mm_per_tick).
+```
+
+### Comportamiento del acumulador ante overflow
+
+Los conteos del encoder son `AtomicI32` (en `sensors/encoder.rs`), que hacen
+`wrapping_add(1)` en cada pulso. El campo `enc_left`/`enc_right` en `SensorFrame`
+es `i32` y se calcula como la suma de tres contadores con `wrapping_add`. En el
+HLC, los deltas se calculan como `enc_left_new - enc_left_old` sobre `i32` en
+Python; si hay overflow, el delta será incorrecto exactamente una vez (en el
+ciclo donde ocurra el wrap). Para misiones de duración típica (< 2 h) el
+wrap no es probable a velocidades de exploración normales, pero es una
+limitación conocida.
+
+### Tests
+
+Los tests de `state_machine_test.rs` que construyen `SensorFrame` directamente
+y verifican el formato ASCII del frame TLM fueron actualizados para incluir
+`enc_left: 0, enc_right: 0` y el sufijo `:0:0` en los strings esperados.
+138 tests en 3 suites, 0 fallos.

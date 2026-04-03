@@ -46,11 +46,11 @@ BAUD     = 115200
 TIMEOUT  = 3.0   # segundos
 BOOT_WAIT = 2.0  # espera tras reset por DTR
 
-# Formato TLM v2.8:
-#   TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
+# Formato TLM v2.12:
+#   TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm:<EL>:<ER>
 # Ejemplo:
-#   TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
-# Grupos: 1=safety, 2=stall, 3=tick_ms, 4=batt_mv, 5=batt_ma, 6-11=I0-I5, 12=T, 13-18=B0-B5, 19=dist_mm
+#   TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm:60:62
+# Grupos: 1=safety, 2=stall, 3=tick_ms, 4=batt_mv, 5=batt_ma, 6-11=I0-I5, 12=T, 13-18=B0-B5, 19=dist_mm, 20=enc_left, 21=enc_right
 TLM_PATTERN = re.compile(
     r"^TLM:(NORMAL|WARN|LIMIT|FAULT):"     # 1: safety state
     r"([01]{6}):"                           # 2: stall mask 6 bits
@@ -60,7 +60,8 @@ TLM_PATTERN = re.compile(
     r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):"  # 6-11: corrientes motores I0-I5
     r"(-?\d+)C:"                            # 12: temperatura ambiente LM335 (°C)
     r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+)C:"  # 13-18: NTC celdas B0-B5 (°C)
-    r"(\d+)mm$"                             # 19: distancia VL53L0X (mm)
+    r"(\d+)mm:"                             # 19: distancia VL53L0X (mm)
+    r"(-?\d+):(-?\d+)$"                     # 20-21: enc_left, enc_right (odometría)
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

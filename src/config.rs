@@ -24,8 +24,8 @@ pub const LOOP_MS: u32 = 20;
 pub const TLM_PERIOD: u8 = 50;
 
 /// Tamaño del buffer de respuesta ASCII en bytes.
-/// TLM extendido: `TLM:NORMAL:000000:99999ms:36000mV:±32768mA:±30000×6:100C:100×6C:8189mm\n` ≈ 140 bytes.
-pub const RESP_BUF: usize = 160;
+/// TLM extendido: `TLM:NORMAL:000000:99999ms:36000mV:±32768mA:±30000×6:100C:100×6C:8189mm:±2147483647:±2147483647\n` ≈ 185 bytes.
+pub const RESP_BUF: usize = 200;
 
 // ─── Sensores de proximidad ──────────────────────────────────────────────────
 
@@ -147,3 +147,23 @@ pub const AMBIENT_TEMP_MAX_C: i32 =  80;
 /// Rango plausible de temperatura para sensores NTC de baterías.
 pub const BATT_TEMP_MIN_C: i32 = -20;
 pub const BATT_TEMP_MAX_C: i32 = 100;
+
+// ─── Odometría (calibrar con hardware real) ───────────────────────────────────
+//
+// Estos valores son TBD — se calibrarán en campo con el rover real.
+// Para calibrar TICKS_PER_REV: elevar el rover, girar una rueda una vuelta
+// completa y contar pulsos con `test_encoders`. Repetir 5 veces y promediar.
+// Para WHEEL_RADIUS_MM: medir el diámetro de la rueda con calibrador y dividir.
+// Para WHEEL_BASE_MM: medir la separación entre centros de ruedas izq/der.
+
+/// Pulsos de encoder por vuelta completa del eje de salida (Phase A solamente).
+/// CALIBRAR en campo — NFP-5840-31ZY-EN, ratio de reductora desconocido.
+pub const TICKS_PER_REV: u32 = 20; // TBD
+
+/// Radio de la rueda en mm.
+/// CALIBRAR en campo — medir con calibrador sobre rueda PLA MAX.
+pub const WHEEL_RADIUS_MM: u32 = 50; // TBD
+
+/// Distancia entre centros de contacto de ruedas izquierda y derecha (track width) en mm.
+/// CALIBRAR en campo — medir separación física entre ruedas.
+pub const WHEEL_BASE_MM: u32 = 280; // TBD

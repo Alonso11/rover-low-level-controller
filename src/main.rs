@@ -370,6 +370,9 @@ fn main() -> ! {
                     stall_mask |= 1 << i;
                 }
             }
+            // Acumuladores de odometría: izquierdo = FL(1)+CL(3)+RL(5), derecho = FR(0)+CR(2)+RR(4)
+            sensor_frame.enc_left  = counts[1].wrapping_add(counts[3]).wrapping_add(counts[5]);
+            sensor_frame.enc_right = counts[0].wrapping_add(counts[2]).wrapping_add(counts[4]);
             if stall_mask != 0 {
                 msm.update_safety(stall_mask);
                 sync_drive!(rover, msm);

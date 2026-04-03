@@ -1,6 +1,11 @@
 <!-- Version: v2.1 -->
 # Rover Low-Level Controller (LLC) — Rust/AVR
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Systems Engineering](https://img.shields.io/badge/Focus-Systems%20Engineering-blue.svg)](#)
+
+## Overview
+
 Firmware modular para un rover de 6 ruedas en **Rust embebido** sobre el
 **ATmega2560** (Arduino Mega 2560). Actúa como controlador de bajo nivel (LLC):
 recibe comandos del protocolo MSM desde la **Raspberry Pi 5** (Yocto Linux)
@@ -111,8 +116,8 @@ Validan la MSM, drivers analógicos y lógica de motores en la máquina de desar
 
 | Suite | Tests | Cobertura |
 |-------|-------|-----------|
-| `state_machine_test` | 46 | Todas las transiciones MSM, watchdog, format_response, parser TLM |
-| `sensors_test` | 57 | ACS712 conversión mA, LM335 conversión °C, NTC interpolación LUT, umbrales Warn/Limit/Fault |
+| `state_machine_test` | 46 | Todas las transiciones MSM, watchdog, format_response, parser TLM (incluyendo campos odometría) |
+| `sensors_test` | 64 | ACS712 conversión mA, LM335 conversión °C, NTC interpolación LUT, umbrales Warn/Limit/Fault |
 | `motor_logic_test` | 28 | Speed mapping, signos de dirección L298N/BTS7960, SixWheelRover, ErasedMotor |
 
 ### Tests de hardware (PC + Arduino via USB)
@@ -199,12 +204,25 @@ Comunicación ASCII con terminador `\n` a 115200 baud 8N1.
 ### Telemetría asíncrona (cada ~1 s)
 
 ```
-TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm
+TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm:<EL>:<ER>
 ```
+
+| Campo | Descripción |
+|-------|-------------|
+| `SAFETY` | `NORMAL` / `WARN` / `LIMIT` / `FAULT` |
+| `STALL` | 6 bits '0'/'1': bit5=FR … bit0=RL |
+| `TS` | ms desde boot (u32, monotónico) |
+| `MV` / `MA` | tensión y corriente de batería (INA226) |
+| `I0`–`I5` | corriente por motor en mA (ACS712, FR→RL) |
+| `T` | temperatura ambiente en °C (LM335) |
+| `B0`–`B5` | temperatura celdas batería en °C (NTC) |
+| `DIST` | distancia frontal en mm (VL53L0X ToF) |
+| `EL` | acumulador encoder izquierdo: FL+CL+RL (odometría) |
+| `ER` | acumulador encoder derecho: FR+CR+RR (odometría) |
 
 Ejemplo:
 ```
-TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm:60:62
 ```
 
 ---
@@ -235,3 +253,19 @@ TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:2
 - **HC-SR04 Datasheet** — [SparkFun](https://cdn.sparkfun.com/datasheets/Sensors/Proximity/HCSR04.pdf)
 - **VL53L0X Datasheet** — [ST Microelectronics](https://www.st.com/en/imaging-and-photonics-solutions/vl53l0x.html)
 - **ACS712 Datasheet** — [Allegro MicroSystems](https://www.allegromicro.com/en/products/sense/current-sensor-ics/zero-to-fifty-amp-integrated-conductor-sensor-ics/acs712)
+
+
+
+
+## License
+
+This project is distributed under the MIT License. See the LICENSE file for details.
+
+---
+
+## Author
+
+Fabián Alonso Gómez Quesada     
+Instituto Tecnológico de Costa Rica (TEC)        
+School of Electronics Engineering           
+SETEC Lab – Space Systems Laboratory     

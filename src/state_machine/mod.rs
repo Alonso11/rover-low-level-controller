@@ -85,6 +85,11 @@ pub struct SensorFrame {
     pub batt_temps: [i32; 6],
     /// Distancia ToF en mm (VL53L0X, D42/D43). 0 = sin lectura disponible.
     pub dist_mm: u16,
+    /// Suma acumulada de pulsos de encoder lado izquierdo (FL+CL+RL).
+    /// Acumulador monotónico; el HLC calcula deltas entre frames consecutivos.
+    pub enc_left: i32,
+    /// Suma acumulada de pulsos de encoder lado derecho (FR+CR+RR).
+    pub enc_right: i32,
 }
 
 impl SensorFrame {
@@ -97,6 +102,8 @@ impl SensorFrame {
         temp_c: 0,
         batt_temps: [0; 6],
         dist_mm: 0,
+        enc_left: 0,
+        enc_right: 0,
     };
 }
 
@@ -348,7 +355,7 @@ fn format_ack<'a>(buf: &'a mut [u8], label: &[u8]) -> &'a [u8] {
     &buf[..i]
 }
 
-/// `TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n`
+/// `TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm:<EL>:<ER>\n`
 ///
 /// - STALL: 6 bits '0'/'1', bit5..bit0 (motor5..motor0)
 /// - TS: tiempo relativo desde arranque en ms (u32, contador monotónico)
@@ -358,8 +365,10 @@ fn format_ack<'a>(buf: &'a mut [u8], label: &[u8]) -> &'a [u8] {
 /// - T: temperatura ambiente en °C (LM335)
 /// - B0–B5: temperatura en °C por sensor NTC de batería [B1a,B1b,B2a,B2b,B3a,B3b]
 /// - DIST: distancia en mm (VL53L0X ToF). 0 = sin lectura disponible.
+/// - EL: acumulador de pulsos encoder izquierdo (FL+CL+RL, i32 con signo)
+/// - ER: acumulador de pulsos encoder derecho (FR+CR+RR, i32 con signo)
 ///
-/// `buf` debe tener al menos 160 bytes.
+/// `buf` debe tener al menos 200 bytes.
 fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensors: SensorFrame) -> &'a [u8] {
     let safety_label: &[u8] = match safety {
         SafetyState::Normal     => b"NORMAL",
@@ -403,6 +412,10 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensor
     write_i32(sensors.dist_mm as i32, buf, &mut i);
     buf[i] = b'm'; i += 1;
     buf[i] = b'm'; i += 1;
+    buf[i] = b':'; i += 1;
+    write_i32(sensors.enc_left, buf, &mut i);
+    buf[i] = b':'; i += 1;
+    write_i32(sensors.enc_right, buf, &mut i);
     buf[i] = b'\n'; i += 1;
     &buf[..i]
 }
