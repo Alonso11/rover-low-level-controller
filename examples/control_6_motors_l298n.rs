@@ -51,8 +51,8 @@ fn main() -> ! {
 
     // --- CONFIGURACIÓN DE TIMERS ---
     let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64); // Motores frontales
-    let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64); // Trasero izquierdo
-    let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64); // Centro + trasero der
+    let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64); // Central derecho
+    let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64); // Central izq + traseros
 
     // --- MOTOR 1: Frontal Derecho (Timer2/OC2B — D9/ENB) ---
     let fr = L298NMotor::new(
@@ -72,35 +72,35 @@ fn main() -> ! {
 
     // D26, D27 libres — separador físico Driver1/Driver2
 
-    // --- MOTOR 3: Central Derecho (Timer4/OC4C — D8/ENA) ---
+    // --- MOTOR 3: Central Derecho (Timer3/OC3A — D5) ---
     let cr = L298NMotor::new(
-        pins.d8.into_output().into_pwm(&mut timer4),
+        pins.d5.into_output().into_pwm(&mut timer3),
         pins.d28.into_output(), // IN1 (canal A)
-        pins.d30.into_output(), // IN2 (canal A)
+        pins.d29.into_output(), // IN2 (canal A)
         false
     );
 
-    // --- MOTOR 4: Central Izquierdo (Timer4/OC4B — D7/ENB) ---
+    // --- MOTOR 4: Central Izquierdo (Timer4/OC4A — D6) ---
     let cl = L298NMotor::new(
-        pins.d7.into_output().into_pwm(&mut timer4),
-        pins.d29.into_output(), // IN3 (canal B)
+        pins.d6.into_output().into_pwm(&mut timer4),
+        pins.d30.into_output(), // IN3 (canal B)
         pins.d31.into_output(), // IN4 (canal B)
         false
     );
 
     // D32, D33 libres — separador físico Driver2/Driver3
 
-    // --- MOTOR 5: Trasero Derecho (Timer4/OC4A — D6) ---
+    // --- MOTOR 5: Trasero Derecho (Timer4/OC4B — D7) ---
     let rr = L298NMotor::new(
-        pins.d6.into_output().into_pwm(&mut timer4),
+        pins.d7.into_output().into_pwm(&mut timer4),
         pins.d34.into_output(),
         pins.d35.into_output(),
         false
     );
 
-    // --- MOTOR 6: Trasero Izquierdo (Timer3/OC3A — D5) ---
+    // --- MOTOR 6: Trasero Izquierdo (Timer4/OC4C — D8) ---
     let rl = L298NMotor::new(
-        pins.d5.into_output().into_pwm(&mut timer3),
+        pins.d8.into_output().into_pwm(&mut timer4),
         pins.d36.into_output(),
         pins.d37.into_output(),
         false

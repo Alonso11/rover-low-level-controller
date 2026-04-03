@@ -13,13 +13,14 @@ fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
     
-    // --- 1. Inicializar Comunicación con RPi 5 (Serial 1) ---
-    // Usamos los pines exactos D19 (RX1) y D18 (TX1) sin downgrade
-    let rx = pins.d19.into_pull_up_input();
-    let tx = pins.d18.into_output();
-    
+    // --- 1. Inicializar Comunicación con RPi 5 (Serial 3 — USART3) ---
+    // TX3=D14 (PJ1), RX3=D15 (PJ0)
+    // USART1 (D18/D19) queda libre para encoders INT2/INT3 de los motores centrales.
+    let rx = pins.d15.into_pull_up_input();
+    let tx = pins.d14.into_output();
+
     let serial = arduino_hal::Usart::new(
-        dp.USART1,
+        dp.USART3,
         rx,
         tx,
         arduino_hal::hal::usart::BaudrateExt::into_baudrate(115200),
