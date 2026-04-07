@@ -24,7 +24,8 @@ por UART y gestiona motores, encoders, sensores de proximidad y corriente.
 │                              │─ GPIO ─│─ USART3 D14/D15 (producción)       │
 └──────────────────────────────┘        │                                    │
                                         │  6 motores L298N (PWM Timer2/3/4)  │
-                                        │  6 encoders Hall (INT0–INT5)        │
+                                        │  6 encoders Hall (INT0–INT5) + MPU-6050        │
+│  MPU-6050 (Accel/Gyro) soft I2C     │
                                         │  HC-SR04 D38/D39 (emergencia)      │
                                         │  VL53L0X D42/D43 soft I2C (táctica)│
                                         │  6× ACS712-30A A0–A5 (corriente)   │
@@ -67,7 +68,7 @@ src/
 
 examples/                      # Programas para flashear al Arduino (AVR)
 tests/
-├── state_machine_test.rs      # Tests lógica pura MSM (x86, sin hardware)
+├── state_machine_test / ekf_test.rs      # Tests lógica pura MSM (x86, sin hardware)
 ├── motor_logic_test.rs        # Tests lógica de motores (x86, sin hardware)
 ├── sensors_test.rs            # Tests drivers ACS712/LM335 (x86, sin hardware)
 └── hardware/
@@ -116,7 +117,7 @@ Validan la MSM, drivers analógicos y lógica de motores en la máquina de desar
 
 | Suite | Tests | Cobertura |
 |-------|-------|-----------|
-| `state_machine_test` | 46 | Todas las transiciones MSM, watchdog, format_response, parser TLM (incluyendo campos odometría) |
+| `state_machine_test / ekf_test` | 46 | Todas las transiciones MSM, watchdog, format_response, parser TLM (incluyendo campos odometría) |
 | `sensors_test` | 64 | ACS712 conversión mA, LM335 conversión °C, NTC interpolación LUT, umbrales Warn/Limit/Fault |
 | `motor_logic_test` | 28 | Speed mapping, signos de dirección L298N/BTS7960, SixWheelRover, ErasedMotor |
 
@@ -160,7 +161,7 @@ RAVEDUDE_PORT=/dev/ttyUSB0 RUSTFLAGS="-C target-cpu=atmega2560" \
 | `control_motor_rpi` | Control GPIO UART USART3 + L298N (producción RPi) |
 | `control_6_motors_l298n` | Drive diferencial 6 ruedas, interfaz de comandos |
 | `test_controller` | RoverController con ErasedMotor y detección de stall |
-| `test_encoders` | Lectura de encoders Hall (INT0–INT5) |
+| `test_encoders` | Lectura de encoders Hall (INT0–INT5) + MPU-6050 |
 | `test_proximity` | HC-SR04 + VL53L0X — medición de distancia |
 | `test_l298n` | Test de un solo motor L298N |
 | `test_bts7960` | Test motor alta potencia BTS7960 |

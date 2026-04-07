@@ -43,6 +43,8 @@ use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, check_temp_c};
+use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
+use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
     format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
@@ -100,6 +102,9 @@ fn INT5() { ENCODER_RL.pulse(); }
 // MODO PRODUCCIÓN:    USART3 (RPi) — cambiar ISR a USART3_RX y leer UDR3
 
 static RX_BUF: RxRingBuffer = RxRingBuffer::new();
+
+// ─── EKF estático (sin heap) ───────────────────────────────────────────────────
+static mut EKF: EkfState = EkfState::new(0.01, 0.09);
 
 /// ISR USART0 RX Complete — copia byte recibido al ring buffer.
 /// En producción (USART3) renombrar a USART3_RX y leer UDR3.
@@ -241,6 +246,22 @@ fn main() -> ! {
     // Comparte el bus soft I2C con VL53L0X (0x29). Sin conflicto de dirección.
     // Requiere shunt externo de INA226_SHUNT_MOHM mΩ en serie con la batería.
     let mut ina = INA226::new();
+    let mut mpu = MPU6050::new();
+    if mpu.init() { iface.log("INFO:MPU6050_OK"); } else { iface.log("WARN:MPU6050_FAIL"); }
+        iface.log("INFO:Calibrating_IMU...");
+        let mut sum_gz = 0.0; let mut sum_ax = 0.0; let mut sum_az = 0.0;
+        for _ in 0..50 {
+            if let Some(r) = mpu.read_raw() {
+                sum_gz += r.6 as f32 * GYRO_SCALE;
+                sum_ax += r.0 as f32 * ACCEL_SCALE;
+                sum_az += r.2 as f32 * ACCEL_SCALE;
+            }
+            arduino_hal::delay_ms(10);
+        }
+        gyro_bias_z = sum_gz / 50.0;
+        accel_bias_x = sum_ax / 50.0;
+        accel_bias_z = sum_az / 50.0;
+        iface.log("INFO:IMU_Calibrated");
     ina.init(INA226_SHUNT_MOHM);
 
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
@@ -301,6 +322,12 @@ fn main() -> ! {
     let mut elapsed_ms:      u32 = 0; // timestamp relativo desde arranque (overflow ~49 días)
     let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
 
+    // --- Calibración de Bias IMU ---
+    let mut gyro_bias_z: f32 = 0.0;
+    let mut accel_bias_x: f32 = 0.0;
+    let mut accel_bias_z: f32 = 9.80665;
+    let mut calib_samples: u16 = 0;
+
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
@@ -312,6 +339,20 @@ fn main() -> ! {
     loop {
         // 1. Watchdog de comunicación
         if let Some(wdog_resp) = msm.tick() {
+        // --- EKF Update Step (MPU-6050 + Encoders) ---
+        if let Some(raw) = mpu.read_raw() {
+            let ax = raw.0 as f32 * ACCEL_SCALE - accel_bias_x;
+            let az = raw.2 as f32 * ACCEL_SCALE - accel_bias_z + 9.80665;
+            let gz = raw.6 as f32 * GYRO_SCALE - gyro_bias_z;
+            let ekf = unsafe { &mut EKF };
+            let deL = ENCODER_FL.get_counts().wrapping_sub(last_counts[1]) + ENCODER_CL.get_counts().wrapping_sub(last_counts[3]) + ENCODER_RL.get_counts().wrapping_sub(last_counts[5]);
+            let deR = ENCODER_FR.get_counts().wrapping_sub(last_counts[0]) + ENCODER_CR.get_counts().wrapping_sub(last_counts[2]) + ENCODER_RR.get_counts().wrapping_sub(last_counts[4]);
+            predict(ekf, deL, deR, ax, az);
+            update_gyro(ekf, gz);
+            sensor_frame.x_mm = ekf.x as i32 * 1000;
+            sensor_frame.y_mm = ekf.y as i32 * 1000;
+            sensor_frame.theta_mrad = (ekf.theta * 1000.0) as i16;
+        }
             sync_drive!(rover, msm);
             iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
@@ -483,6 +524,14 @@ fn main() -> ! {
             if ina.ready {
                 sensor_frame.batt_mv = ina.read_bus_mv();
                 sensor_frame.batt_ma = ina.read_current_ma();
+            // Protección de batería baja (RF-005 / Tesis §3.4.5)
+            if sensor_frame.batt_mv > 5000 && sensor_frame.batt_mv < 12000 {
+                if msm.state != RoverState::Safe && msm.state != RoverState::Fault {
+                    msm.process(Command::Fault); // Usamos Fault logic para stop inmediato
+                    msm.state = RoverState::Safe;
+                    iface.log("ALARM:LOW_BATTERY_SAFE_MODE");
+                }
+            }
             }
 
             // Leer 6 sensores NTC de batería y clasificar el peor nivel térmico.

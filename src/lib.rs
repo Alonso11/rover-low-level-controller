@@ -19,6 +19,8 @@ pub mod controller;
 // siempre disponibles. Los drivers con HAL (HC-SR04, encoders, TF-Luna) solo
 // compilan con feature "avr".
 pub mod sensors;
+/// Filtro de Kalman Extendido para fusión sensorial
+pub mod ekf;
 
 // Módulo de lógica pura (sin HAL) — siempre disponible, testeable en x86.
 pub mod state_machine;

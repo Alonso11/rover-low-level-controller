@@ -35,6 +35,9 @@ pub mod vl53l0x;
 /// Driver para el monitor de potencia INA226 vía soft I2C (bus compartido con VL53L0X)
 #[cfg(feature = "avr")]
 pub mod ina226;
+/// Driver para el sensor inercial MPU-6050 vía soft I2C
+#[cfg(feature = "avr")]
+pub mod mpu6050;
 
 #[cfg(feature = "avr")]
 pub use encoder::{Encoder, HallEncoder};
@@ -46,6 +49,8 @@ pub use tf_luna::TFLuna;
 pub use vl53l0x::VL53L0X;
 #[cfg(feature = "avr")]
 pub use ina226::INA226;
+#[cfg(feature = "avr")]
+pub use mpu6050::MPU6050;
 
 /// Error de lectura de un sensor de proximidad.
 #[cfg(feature = "avr")]
