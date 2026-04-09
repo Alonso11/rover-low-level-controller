@@ -315,7 +315,7 @@ fn main() -> ! {
     let ntc_b3b_pin = pins.a12.into_analog_input(&mut adc);  // Banco 3 — sensor B
 
     // Instancias ACS712 por motor [FR, FL, CR, CL, RR, RL].
-    // La variante (05A/30A) se elige en compilación según el feature activo.
+    // La variante se elige en compilación según el feature activo.
     // Para calibrar el zero_mv de un motor concreto usar .calibrate_zero(mv).
     #[cfg(feature = "mixed-drivers")]
     let acs: [ACS712; 6] = [
@@ -325,7 +325,9 @@ fn main() -> ! {
     ];
     #[cfg(feature = "all-bts7960")]
     let acs: [ACS712; 6] = [ACS712::new_30a(); 6];
-    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+    #[cfg(feature = "all-20a")]
+    let acs: [ACS712; 6] = [ACS712::new_20a(); 6]; // trade-off: un tipo para todos
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
     let acs: [ACS712; 6] = [ACS712::new_05a(); 6]; // all-l298n (default)
 
     let lm335 = LM335::new(); // offset 0 K — ajustar con with_offset si es necesario

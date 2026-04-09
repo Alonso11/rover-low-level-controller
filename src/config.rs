@@ -102,12 +102,12 @@ pub const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2 A
 pub const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2 A
 
 /// Umbrales para driver BTS7960 (43 A pico — indicativos, calibrar con motor real).
-#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
-pub const OC_WARN_BTS:  i32 = 8_000;  // ~20 % del pico
-#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
-pub const OC_LIMIT_BTS: i32 = 12_000; // ~28 % del pico
-#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
-pub const OC_FAULT_BTS: i32 = 15_000; // ~35 % del pico
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
+pub const OC_WARN_BTS:  i32 = 8_000;  // ~20 % operativo
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
+pub const OC_LIMIT_BTS: i32 = 12_000; // ~28 % operativo
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
+pub const OC_FAULT_BTS: i32 = 15_000; // ~35 % operativo (< 20 A → dentro del rango 20A)
 
 /// Umbrales de sobrecorriente por motor `[FR, FL, CR, CL, RR, RL]`.
 /// Seleccionados en tiempo de compilación según el feature activo.
@@ -125,11 +125,23 @@ pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_BTS; 6];
 #[cfg(feature = "all-bts7960")]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_BTS; 6];
 
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+// 6× ACS712-20A — layout: FR/FL → L298N, CR/CL/RR/RL → BTS7960.
+// Los umbrales son idénticos a mixed-drivers: el sensor cambia, no los límites
+// del motor. La resolución de 49 mA/count es suficiente para ambos:
+//   L298N fault 2000 mA → 41 counts de margen
+//   BTS7960 fault 15000 mA → 306 counts de margen (< 20 A, no satura)
+#[cfg(feature = "all-20a")]
+pub const OC_WARN:  [i32; 6] = [OC_WARN_L298N,  OC_WARN_L298N,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS];
+#[cfg(feature = "all-20a")]
+pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N, OC_LIMIT_L298N, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS];
+#[cfg(feature = "all-20a")]
+pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N, OC_FAULT_L298N, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS];
+
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
 pub const OC_WARN:  [i32; 6] = [OC_WARN_L298N;  6];
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
 pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N; 6];
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
 
 // ─── Protección térmica de batería ────────────────────────────────────────────

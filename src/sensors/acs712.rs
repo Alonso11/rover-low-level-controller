@@ -1,19 +1,28 @@
-// Version: v1.1
+// Version: v1.2
 //! # Driver ACS712 — Sensor de corriente por efecto Hall
 //!
 //! Convierte lecturas crudas de ADC (10-bit, AVCC=5V) a corriente en mA.
-//! Disponible en variantes de ±5 A y ±30 A con distinta sensibilidad.
+//! Disponible en variantes de ±5 A, ±20 A y ±30 A con distinta sensibilidad.
 //!
 //! ## Constructores recomendados
-//! | Variante       | Rango | Sensibilidad | Uso en rover              |
-//! |----------------|-------|--------------|---------------------------|
-//! | `new_05a()`    | ±5 A  | 185 mV/A     | Motores con L298N (2A)    |
-//! | `new_30a()`    | ±30 A | 66 mV/A      | Motores con BTS7960 (43A) |
+//! | Variante       | Rango | Sensibilidad | Resolución   | Uso en rover              |
+//! |----------------|-------|--------------|--------------|---------------------------|
+//! | `new_05a()`    | ±5 A  | 185 mV/A     | ~26 mA/count | Motores con L298N (2A)    |
+//! | `new_20a()`    | ±20 A | 100 mV/A     | ~49 mA/count | Trade-off único sensor    |
+//! | `new_30a()`    | ±30 A | 66 mV/A      | ~74 mA/count | Motores con BTS7960 (43A) |
+//!
+//! ## Trade-off: un solo tipo para los 6 motores
+//! Si se usan 6× ACS712-20A (un tipo por compra):
+//!   - L298N (fault a 2 A): 2000 mA / 49 mA/count ≈ 41 counts → detección OK
+//!   - BTS7960 (fault a 15 A): 15000 mA / 49 mA/count ≈ 306 counts → OK
+//!   - Pico BTS7960 (43 A): satura a 20 A → stall extremo no se detecta,
+//!     pero el firmware ya dispara FAULT antes (OC_FAULT_BTS = 15 A < 20 A).
 //!
 //! ## Selección automática según feature de Cargo
 //! - (default / `all-l298n`): `new_05a()` para los 6 motores
 //! - `mixed-drivers`:  `new_05a()` para FR/FL, `new_30a()` para CR/CL/RR/RL
 //! - `all-bts7960`:   `new_30a()` para los 6 motores
+//! - `all-20a`:       `new_20a()` para los 6 motores (un tipo, trade-off)
 //!
 //! El driver es puro Rust sin dependencias de `arduino_hal`: recibe el
 //! valor crudo del ADC para que la lógica de conversión sea testeable en x86.
@@ -34,6 +43,16 @@ impl ACS712 {
     /// Resolución: ~27 mA/count — 3× mejor que el 30A en este rango.
     pub fn new_05a() -> Self {
         Self { zero_mv: 2500, sensitivity_mv_a: 185 }
+    }
+
+    /// ACS712-20A: ±20 A, 100 mV/A.
+    /// Trade-off cuando se compra un solo tipo para los 6 motores.
+    /// Resolución: ~49 mA/count.
+    /// - L298N (fault 2 A): 41 counts de margen → detección adecuada.
+    /// - BTS7960 (fault 15 A): 306 counts → OK. Satura a 20 A (pico 43 A
+    ///   no detectable), pero OC_FAULT_BTS dispara antes de saturar.
+    pub fn new_20a() -> Self {
+        Self { zero_mv: 2500, sensitivity_mv_a: 100 }
     }
 
     /// ACS712-30A: ±30 A, 66 mV/A.
