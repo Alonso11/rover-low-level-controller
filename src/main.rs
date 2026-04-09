@@ -468,17 +468,6 @@ fn main() -> ! {
                 len
             };
             let cmd_bytes = &cmd_buf[..cmd_len];
-            // DEBUG: echo hex de los bytes recibidos
-            iface.log("DBG:");
-            for &b in cmd_bytes {
-                let hi = b >> 4;
-                let lo = b & 0xF;
-                let h = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
-                let l = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
-                resp_buf[0] = h; resp_buf[1] = l; resp_buf[2] = b' ';
-                iface.send_response(&resp_buf[..3]);
-            }
-            iface.send_response(b"\n");
             let response = match parse_command(cmd_bytes) {
                 Some(cmd) => msm.process(cmd),
                 None      => Response::ErrUnknown,
