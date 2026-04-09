@@ -16,6 +16,11 @@ pub enum Command {
     Avoid(AvoidDir),
     Retreat,
     Fault,
+    /// Safe Mode: iniciado por el HLC ante batería/temperatura crítica (SYS-FUN-040).
+    /// Bloquea todos los comandos de movimiento hasta RST explícito.
+    /// Diferencia con Fault: Safe es una condición energética/térmica gestionada
+    /// por el HLC, no un fallo hardware del LLC. El LLC reporta "SFE" en TLM.
+    Safe,
     Reset,
 }
 
@@ -152,6 +157,14 @@ impl MasterStateMachine {
                 self.drive = DriveOutput::STOP;
                 Response::Ack(RoverState::Fault)
             }
+            Command::Safe => {
+                // Transición explícita a Safe Mode solicitada por el HLC
+                // (batería crítica, temperatura crítica — SYS-FUN-040a/040b).
+                // Los motores se detienen inmediatamente; solo RST puede salir.
+                self.state = RoverState::Safe;
+                self.drive = DriveOutput::STOP;
+                Response::Ack(RoverState::Safe)
+            }
         }
     }
 
@@ -195,6 +208,7 @@ pub fn parse_command(bytes: &[u8]) -> Option<Command> {
         b"STB"  => Some(Command::Standby),
         b"RET"  => Some(Command::Retreat),
         b"FLT"  => Some(Command::Fault),
+        b"SAFE" => Some(Command::Safe),
         b"RST"  => Some(Command::Reset),
         _ if bytes.starts_with(b"EXP:") => parse_explore(&bytes[4..]),
         _ if bytes.starts_with(b"AVD:") => parse_avoid(&bytes[4..]),

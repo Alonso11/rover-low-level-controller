@@ -158,7 +158,7 @@ macro_rules! sync_drive {
     // ── Soft stop / start ──────────────────────────────────────────────────
     (soft, $rover:expr, $msm:expr, $ramp:expr) => {{
         let target_l = match $msm.state {
-            RoverState::Fault | RoverState::Standby => 0,
+            RoverState::Fault | RoverState::Safe | RoverState::Standby => 0,
             _ => if $msm.safety == SafetyState::Limit {
                 $msm.drive.left.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP)
             } else {
@@ -166,7 +166,7 @@ macro_rules! sync_drive {
             },
         };
         let target_r = match $msm.state {
-            RoverState::Fault | RoverState::Standby => 0,
+            RoverState::Fault | RoverState::Safe | RoverState::Standby => 0,
             _ => if $msm.safety == SafetyState::Limit {
                 $msm.drive.right.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP)
             } else {
@@ -558,11 +558,15 @@ fn main() -> ! {
             if ina.ready {
                 sensor_frame.batt_mv = ina.read_bus_mv();
                 sensor_frame.batt_ma = ina.read_current_ma();
-            // Protección de batería baja (RF-005 / Tesis §3.4.5)
+            // Protección de batería baja (EPS-REQ-002 / SYS-FUN-040a):
+            // Si el INA226 lee < 12 V (con lectura válida > 5 V para descartar
+            // el arranque en frío), el LLC entra en Safe Mode directamente sin
+            // esperar al HLC. El HLC también detecta esta condición vía TLM y
+            // emite Command::Safe, pero la protección en LLC es la última línea.
             if sensor_frame.batt_mv > 5000 && sensor_frame.batt_mv < 12000 {
                 if msm.state != RoverState::Safe && msm.state != RoverState::Fault {
-                    msm.process(Command::Fault); // Usamos Fault logic para stop inmediato
-                    msm.state = RoverState::Safe;
+                    msm.process(Command::Safe);
+                    sync_drive!(hard, rover, msm, ramp);
                     iface.log("ALARM:LOW_BATTERY_SAFE_MODE");
                 }
             }

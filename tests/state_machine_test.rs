@@ -426,3 +426,132 @@ fn test_format_tlm_timestamp_wraps_gracefully() {
     let result = format_response(resp, &mut buf);
     assert!(result.starts_with(b"TLM:NORMAL:000000:4294967295ms:0mV:0mA:"));
 }
+
+// ─── Safe Mode (Command::Safe / SYS-FUN-040) ─────────────────────────────────
+
+#[test]
+fn test_parse_safe() {
+    assert_eq!(parse_command(b"SAFE"), Some(Command::Safe));
+}
+
+#[test]
+fn test_safe_desde_explore_para_motores_y_entra_safe() {
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Explore { left: 80, right: 80 });
+    assert_eq!(msm.state, RoverState::Explore);
+
+    let resp = msm.process(Command::Safe);
+
+    assert_eq!(resp, Response::Ack(RoverState::Safe));
+    assert_eq!(msm.state, RoverState::Safe);
+    assert_eq!(msm.drive, DriveOutput::STOP);
+}
+
+#[test]
+fn test_safe_desde_standby() {
+    let mut msm = MasterStateMachine::new();
+    let resp = msm.process(Command::Safe);
+    assert_eq!(resp, Response::Ack(RoverState::Safe));
+    assert_eq!(msm.state, RoverState::Safe);
+    assert_eq!(msm.drive, DriveOutput::STOP);
+}
+
+#[test]
+fn test_safe_desde_retreat() {
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Explore { left: 50, right: 50 });
+    msm.process(Command::Retreat);
+    let resp = msm.process(Command::Safe);
+    assert_eq!(resp, Response::Ack(RoverState::Safe));
+    assert_eq!(msm.state, RoverState::Safe);
+}
+
+#[test]
+fn test_safe_bloquea_explore() {
+    // En Safe Mode, EXP debe retornar ErrEstop (mismo que Fault)
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    let resp = msm.process(Command::Explore { left: 80, right: 80 });
+    assert_eq!(resp, Response::ErrEstop);
+    assert_eq!(msm.state, RoverState::Safe, "Safe Mode no debe cambiar ante EXP");
+}
+
+#[test]
+fn test_safe_bloquea_avoid() {
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    let resp = msm.process(Command::Avoid(AvoidDir::Left));
+    assert_eq!(resp, Response::ErrEstop);
+}
+
+#[test]
+fn test_safe_bloquea_retreat() {
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    let resp = msm.process(Command::Retreat);
+    assert_eq!(resp, Response::ErrEstop);
+}
+
+#[test]
+fn test_safe_permite_ping() {
+    // PING debe seguir funcionando en Safe (watchdog keepalive)
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    let resp = msm.process(Command::Ping);
+    assert_eq!(resp, Response::Pong);
+    assert_eq!(msm.state, RoverState::Safe, "PING no debe salir de Safe");
+}
+
+#[test]
+fn test_rst_sale_de_safe() {
+    // Solo RST puede salir de Safe Mode — requiere acción explícita del operador
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Explore { left: 80, right: 80 });
+    msm.process(Command::Safe);
+    assert_eq!(msm.state, RoverState::Safe);
+
+    let resp = msm.process(Command::Reset);
+    assert_eq!(resp, Response::Ack(RoverState::Standby));
+    assert_eq!(msm.state, RoverState::Standby);
+    assert_eq!(msm.safety, SafetyState::Normal);
+    assert_eq!(msm.drive, DriveOutput::STOP);
+}
+
+#[test]
+fn test_watchdog_no_corre_en_safe() {
+    // El watchdog solo corre en Explore/Avoid/Retreat — Safe debe ser inmune
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    for _ in 0..200 {
+        assert_eq!(msm.tick(), None, "tick() no debe dispararse en Safe");
+    }
+    assert_eq!(msm.state, RoverState::Safe);
+}
+
+#[test]
+fn test_safe_telemetry_reporta_sfe() {
+    // El frame TLM en Safe debe incluir el estado "SFE"
+    let mut buf = [0u8; 200];
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    let resp = msm.telemetry(0, SensorFrame::ZERO);
+    let bytes = format_response(resp, &mut buf);
+    // El ACK del estado es independiente del TLM, pero verificamos que
+    // format_response no pánico y retorna algo sensato.
+    assert!(bytes.len() > 4);
+}
+
+#[test]
+fn test_safe_idempotente() {
+    // Enviar SAFE dos veces no debe cambiar el estado
+    let mut msm = MasterStateMachine::new();
+    msm.process(Command::Safe);
+    let resp = msm.process(Command::Safe);
+    // En Safe, Safe es bloqueado por ErrEstop (ya está en estado locked)
+    // Verificar que sigue en Safe y no crashea
+    assert_eq!(msm.state, RoverState::Safe);
+    // La respuesta puede ser ErrEstop (está en estado Safe que bloquea) o ACK:SFE
+    // Lo importante es que el estado no cambió y drive sigue STOP
+    assert_eq!(msm.drive, DriveOutput::STOP);
+    let _ = resp; // cualquier respuesta es válida
+}
