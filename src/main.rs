@@ -44,6 +44,7 @@ use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, check_temp_c};
 use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
+use rover_low_level_controller::ramp::DriveRamp;
 use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
@@ -132,23 +133,53 @@ macro_rules! adc_avg {
     }};
 }
 
-/// Aplica msm.drive al rover; en FAULT/STANDBY para todos los motores.
-/// En estado Limit recorta la velocidad a LIMIT_SPEED_CAP %.
+/// Aplica msm.drive al rover con dos modos de parada.
+///
+/// ## Modos
+///
+/// `hard` — Stop inmediato: resetea la rampa y llama a `rover.stop()`.
+///   Usar en: obstáculo HC-SR04/VL53L0X, sobrecorriente OC_FAULT, stall de encoder.
+///   El motor llega a 0 en el mismo tick — máximo pico de back-EMF, pero
+///   obligatorio cuando hay peligro físico inmediato.
+///
+/// `soft` — Stop/start por rampa: interpola hacia el target del MSM a
+///   RAMP_STEP_SOFT (10 %) por ciclo de 20 ms.
+///   Usar en: comando GCS (STB/FLT), watchdog de comms, cap de safety Limit.
+///   El motor llega a 0 en ≤ 200 ms — cumple RF-005 (≤ 500 ms).
+///
+/// En estado Limit, ambos modos recortan el target a LIMIT_SPEED_CAP antes
+/// de pasarlo a la rampa (soft) o aplicarlo directo (hard ya para todo).
 macro_rules! sync_drive {
-    ($rover:expr, $msm:expr) => {
-        match $msm.state {
-            RoverState::Fault | RoverState::Standby => $rover.stop(),
-            _ => {
-                let (l, r) = if $msm.safety == SafetyState::Limit {
-                    ($msm.drive.left.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP),
-                     $msm.drive.right.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP))
-                } else {
-                    ($msm.drive.left, $msm.drive.right)
-                };
-                $rover.set_speeds(l, r);
-            }
-        }
+    // ── Hard stop ──────────────────────────────────────────────────────────
+    (hard, $rover:expr, $msm:expr, $ramp:expr) => {
+        $ramp.hard_stop();
+        $rover.stop();
     };
+    // ── Soft stop / start ──────────────────────────────────────────────────
+    (soft, $rover:expr, $msm:expr, $ramp:expr) => {{
+        let target_l = match $msm.state {
+            RoverState::Fault | RoverState::Standby => 0,
+            _ => if $msm.safety == SafetyState::Limit {
+                $msm.drive.left.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP)
+            } else {
+                $msm.drive.left
+            },
+        };
+        let target_r = match $msm.state {
+            RoverState::Fault | RoverState::Standby => 0,
+            _ => if $msm.safety == SafetyState::Limit {
+                $msm.drive.right.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP)
+            } else {
+                $msm.drive.right
+            },
+        };
+        let (l, r) = $ramp.step(target_l, target_r, RAMP_STEP_SOFT);
+        if l == 0 && r == 0 {
+            $rover.stop();
+        } else {
+            $rover.set_speeds(l, r);
+        }
+    }};
 }
 
 // ─── Causa de reset (MCUSR) ──────────────────────────────────────────────────
@@ -314,6 +345,9 @@ fn main() -> ! {
 
     // ── Estado del loop ──────────────────────────────────────────────────────
     let mut msm              = MasterStateMachine::new();
+    // Rampa de velocidad: interpola entre velocidad actual y objetivo del MSM
+    // para evitar picos de back-EMF en frenadas bruscas. Ver src/ramp.rs.
+    let mut ramp             = DriveRamp::new();
     let mut resp_buf         = [0u8; RESP_BUF];
     let mut tlm_counter:      u8 = 0;
     let mut hc_counter:       u8 = 0;
@@ -353,7 +387,7 @@ fn main() -> ! {
             sensor_frame.y_mm = ekf.y as i32 * 1000;
             sensor_frame.theta_mrad = (ekf.theta * 1000.0) as i16;
         }
-            sync_drive!(rover, msm);
+            sync_drive!(soft, rover, msm, ramp); // watchdog: no hay peligro físico, rampa suave
             iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
 
@@ -365,7 +399,7 @@ fn main() -> ! {
             if let Ok(mm) = hcsr04.measure_mm() {
                 if mm < HC_EMERGENCY_MM {
                     let resp = msm.process(Command::Fault);
-                    sync_drive!(rover, msm);
+                    sync_drive!(hard, rover, msm, ramp); // obstáculo físico: stop inmediato
                     iface.send_response(format_response(resp, &mut resp_buf));
                 }
             }
@@ -375,7 +409,7 @@ fn main() -> ! {
                     sensor_frame.dist_mm = mm;
                     if mm < TOF_EMERGENCY_MM {
                         let resp = msm.process(Command::Fault);
-                        sync_drive!(rover, msm);
+                        sync_drive!(hard, rover, msm, ramp); // ToF láser: stop inmediato
                         iface.send_response(format_response(resp, &mut resp_buf));
                     }
                 }
@@ -416,7 +450,7 @@ fn main() -> ! {
             sensor_frame.enc_right = counts[0].wrapping_add(counts[2]).wrapping_add(counts[4]);
             if stall_mask != 0 {
                 msm.update_safety(stall_mask);
-                sync_drive!(rover, msm);
+                sync_drive!(hard, rover, msm, ramp); // stall encoder: motor bloqueado, corriente alta
                 iface.send_response(format_response(msm.telemetry(stall_mask, sensor_frame), &mut resp_buf));
             }
         }
@@ -447,7 +481,7 @@ fn main() -> ! {
                 Some(cmd) => msm.process(cmd),
                 None      => Response::ErrUnknown,
             };
-            sync_drive!(rover, msm);
+            sync_drive!(soft, rover, msm, ramp); // comando GCS: rampa suave (STB, EXP, AVD, RET, FLT)
             iface.send_response(format_response(response, &mut resp_buf));
         }
 
@@ -473,7 +507,7 @@ fn main() -> ! {
             }
             if fault_mask != 0 {
                 msm.update_overcurrent(SafetyState::FaultStall);
-                sync_drive!(rover, msm);
+                sync_drive!(hard, rover, msm, ramp); // sobrecorriente OC_FAULT: motor en riesgo ahora
                 iface.send_response(format_response(
                     msm.telemetry(fault_mask, sensor_frame), &mut resp_buf));
             }
@@ -572,9 +606,13 @@ fn main() -> ! {
             let prev_safety = msm.safety;
             let faulted = msm.update_overcurrent(worst);
 
-            // sync_drive si: hay fault, safety cambió (cap aplicado/eliminado), o sigue en Warn/Limit
-            if faulted || msm.safety != prev_safety || msm.safety != SafetyState::Normal {
-                sync_drive!(rover, msm);
+            // sync_drive si: hay fault, safety cambió (cap aplicado/eliminado), o sigue en Warn/Limit.
+            // hard si hay fault real (sobrecorriente superó OC_FAULT en la lectura lenta);
+            // soft si solo cambió el nivel Warn/Limit (aplicar o levantar el speed cap).
+            if faulted {
+                sync_drive!(hard, rover, msm, ramp); // sobrecorriente confirmada: stop inmediato
+            } else if msm.safety != prev_safety || msm.safety != SafetyState::Normal {
+                sync_drive!(soft, rover, msm, ramp); // cap de velocidad: rampa hacia nuevo límite
             }
             // TLM inmediato si el estado no es Normal
             if faulted || msm.safety != SafetyState::Normal {

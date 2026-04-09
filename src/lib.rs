@@ -25,5 +25,8 @@ pub mod ekf;
 // Módulo de lógica pura (sin HAL) — siempre disponible, testeable en x86.
 pub mod state_machine;
 
+// Rampa de velocidad para soft-stop/soft-start — lógica pura, sin HAL.
+pub mod ramp;
+
 // Constantes de configuración — sin dependencias de HAL, siempre disponibles.
 pub mod config;

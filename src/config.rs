@@ -87,6 +87,15 @@ pub const INA226_SHUNT_MOHM: u16 = 10;
 /// Velocidad máxima (%) aplicada a todos los motores cuando `safety == Limit`.
 pub const LIMIT_SPEED_CAP: i16 = 60;
 
+/// Incremento máximo de velocidad (%) por ciclo (20 ms) en modo soft-stop/start.
+///
+/// Con este valor, la desaceleración desde 100% hasta 0% tarda 10 ticks × 20 ms
+/// = 200 ms, dentro del margen de RF-005 (Fault Stop ≤ 500 ms).
+///
+/// Reducir este valor → rampa más suave, mayor protección contra back-EMF,
+/// pero mayor latencia de parada. No bajar de 5 (400 ms máx.) para RF-005.
+pub const RAMP_STEP_SOFT: i16 = 10;
+
 /// Umbrales para driver L298N (2 A continuo / 3 A pico).
 pub const OC_WARN_L298N:  i32 = 1_200; // 60 % de 2 A
 pub const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2 A
