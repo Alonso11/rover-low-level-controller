@@ -420,14 +420,32 @@ fn main() -> ! {
 
         // 3. Stall detection via encoders
         // Lee los 6 contadores y compara con el ciclo anterior.
-        // Si la velocidad supera STALL_SPEED_MIN y el encoder no avanzó,
-        // incrementa el timer. Al superar STALL_THRESHOLD → bit en stall_mask.
         {
             let counts = [
                 ENCODER_FR.get_counts(), ENCODER_FL.get_counts(),
                 ENCODER_CR.get_counts(), ENCODER_CL.get_counts(),
                 ENCODER_RR.get_counts(), ENCODER_RL.get_counts(),
             ];
+            
+            // --- Telemetría RAW para Calibración EKF/MATLAB (v2.13) ---
+            // Formato: RAW:tick:ax:ay:az:gx:gy:gz:encL:encR
+            if let Some(raw) = mpu.read_raw() {
+                let mut raw_buf = [0u8; 100];
+                let mut r_i = 0;
+                for &b in b"RAW:" { raw_buf[r_i] = b; r_i += 1; }
+                write_u32(elapsed_ms, &mut raw_buf, &mut r_i);
+                for val in &[raw.0, raw.1, raw.2, raw.4, raw.5, raw.6] { // ax, ay, az, gx, gy, gz
+                    raw_buf[r_i] = b':'; r_i += 1;
+                    write_i32(*val as i32, &mut raw_buf, &mut r_i);
+                }
+                raw_buf[r_i] = b':'; r_i += 1;
+                write_i32(counts[1].wrapping_add(counts[3]).wrapping_add(counts[5]), &mut raw_buf, &mut r_i); // Total Left
+                raw_buf[r_i] = b':'; r_i += 1;
+                write_i32(counts[0].wrapping_add(counts[2]).wrapping_add(counts[4]), &mut raw_buf, &mut r_i); // Total Right
+                raw_buf[r_i] = b'\n'; r_i += 1;
+                iface.send_response(&raw_buf[..r_i]);
+            }
+
             // Velocidad por motor: [FR, FL, CR, CL, RR, RL]
             // FR/CR/RR → lado derecho, FL/CL/RL → lado izquierdo
             let speeds = [
