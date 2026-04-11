@@ -174,12 +174,42 @@ pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N; 6];
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
 
 // ─── Protección térmica de batería ────────────────────────────────────────────
+//
+// Sensor: NTC thermistor (módulo AD36958) en superficie de cada celda 18650 NMC.
+// Estos umbrales aplican a temperatura de celda, NO a temperatura ambiente.
+// La temperatura de celda bajo carga excede la temperatura ambiente 10-15 °C.
+//
+// Fundamento para celdas Li-ion NMC 18650 (ej. Samsung INR18650-30Q,
+// Panasonic NCR18650B):
+//   - Rango operativo de descarga recomendado: −20 °C … 60 °C (Samsung SDI,
+//     2015, *INR18650-30Q Specification Sheet*, §Discharge Characteristics).
+//   - Inicio de descomposición del electrolito (SEI): ~70–80 °C.
+//   - Onset de thermal runaway (exotérmico autosostenible): ~80–130 °C según
+//     nivel de SoC y variante química (NMC vs NCA).
+//     Ref.: Feng, X. et al. (2018). "Thermal runaway mechanism of lithium ion
+//     battery for electric vehicles: A review." *Energy Storage Materials*,
+//     10, 246-267. — Fig. 3: ARC onset para celda NMC a 100 % SoC ≈ 80 °C.
+//   - Requisito estándar: IEC 62133-2:2017 §4.3.8 — máx. 60 °C de operación
+//     para celdas secundarias de litio en equipos portátiles.
+//
+// Escala de umbrales:
+//   WARN  = 45 °C → tope del rango recomendado; alertar al operador.
+//   LIMIT = 55 °C → reducir velocidad (< corriente de carga → < calor Joule).
+//   FAULT = 65 °C → detención inmediata; margen de 15 °C antes del onset de
+//           descomposición del SEI (~80 °C) y 25-65 °C antes del thermal runaway.
+//
+// Nota: estos umbrales disparan ANTES que el TEMP_CRIT_C del HLC (60 °C de
+// temperatura AMBIENTE). En operación normal, la temperatura de celda supera
+// la ambiente al menos 10 °C bajo carga, por lo que BATT_FAULT_C = 65 °C
+// se alcanza cuando el ambiente está aún en ~50–55 °C (< TEMP_CRIT_C).
+// La protección térmica del HLC es una red de seguridad secundaria para el
+// caso de fallo del sensor NTC o de la telemetría de temperatura de celda.
 
-/// Umbrales de temperatura de celdas 18650 en °C.
-/// El thermal runaway inicia ~80–90 °C; estos márgenes son conservadores.
-pub const BATT_WARN_C:  i32 = 45; // operación prolongada a alta carga
-pub const BATT_LIMIT_C: i32 = 55; // reducir velocidad
-pub const BATT_FAULT_C: i32 = 65; // detener rover — peligro inmediato
+/// Temperatura de celda 18650 NMC en °C para cada nivel de protección.
+/// Sensor: NTC en superficie de celda — ver comentario del bloque anterior.
+pub const BATT_WARN_C:  i32 = 45; // tope del rango operativo recomendado
+pub const BATT_LIMIT_C: i32 = 55; // IEC 62133-2:2017 §4.3.8 máx. continuo
+pub const BATT_FAULT_C: i32 = 65; // 15 °C antes del onset de descomposición SEI
 
 // ─── Plausibilidad de sensores de temperatura ─────────────────────────────────
 //
