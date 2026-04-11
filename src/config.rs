@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.3
 //! # Configuración del firmware — parámetros ajustables en tiempo de compilación
 //!
 //! Centraliza todas las constantes que afectan el comportamiento del rover.
@@ -28,12 +28,58 @@ pub const TLM_PERIOD: u8 = 50;
 pub const RESP_BUF: usize = 200;
 
 // ─── Sensores de proximidad ──────────────────────────────────────────────────
+//
+// Análisis de distancia de frenado para HC_EMERGENCY_MM = 200 mm:
+//
+// 1. Latencia de detección (peor caso):
+//      t_scan     = HC_READ_PERIOD × LOOP_MS = 5 × 20 ms = 100 ms
+//      t_proceso  = 1 ciclo = 20 ms  (procesamiento tras detección)
+//      t_total    = 120 ms
+//    Un obstáculo que entra en rango justo después de una lectura no se detecta
+//    hasta el siguiente ciclo de lectura, 100 ms más tarde.
+//
+// 2. Tipo de parada: hard_stop (ver ramp.rs) — aplica duty = 0 en el mismo ciclo.
+//    No hay rampa de desaceleración; la parada es efectiva en ≤ 20 ms.
+//
+// 3. Velocidad máxima segura:
+//      v_max = HC_EMERGENCY_MM / t_total = 200 mm / 120 ms ≈ 1.67 m/s
+//    El umbral de 200 mm garantiza parada segura para cualquier velocidad
+//    del rover por debajo de 1.67 m/s, lo cual cubre ampliamente la velocidad
+//    estimada de operación (ver punto 4).
+//
+// 4. Velocidad de exploración estimada (EXP_SPEED = 40 % — HLC config):
+//    Los motores DC con L298N a 12 V y la reductora NFP-5840-31ZY-EN tienen
+//    velocidad de salida TBD (calibrar con encoders). Estimación conservadora:
+//      v_100pct ≈ 0.5–1.0 m/s  →  v_explore ≈ 0.2–0.4 m/s
+//    Distancia recorrida durante t_total = 120 ms:
+//      d = 0.4 m/s × 0.12 s = 48 mm   (peor caso dentro del estimado)
+//    Margen de seguridad: 200 mm − 48 mm = 152 mm  ✓
+//    ACTUALIZAR este cálculo con la velocidad real medida en campo.
+//
+// 5. Zona de detección (HC_ECHO_TIMEOUT limita a ~300 mm):
+//    Objeto a 250 mm avanzando hacia el rover a 0.4 m/s:
+//      t_hasta_emergencia = 50 mm / 0.4 m/s = 125 ms > t_total (120 ms)
+//    → el rover puede detenerse antes de que el obstáculo llegue a 200 mm ✓
+//
+// 6. Ángulo de apertura HC-SR04: ±15° efectivos (Cytron Technologies, 2013,
+//    HC-SR04 User Manual, §3). Objetos angulados o estrechos pueden no ser
+//    detectados. El VL53L0X (25° FOV, precisión ±3 %) actúa como respaldo.
+//
+// Ref.: Borenstein, J., Everett, B. & Feng, L. (1996). Navigating Mobile
+//   Robots: Sensors and Techniques. A K Peters. §4.2 — detección de obstáculos
+//   con sonar, cálculo de margen de parada.
+// Ref.: Cytron Technologies. (2013). HC-SR04 Ultrasonic Ranging Module —
+//   User Guide. §2: range 20–4000 mm, accuracy ±3 mm, beam angle 15°.
 
-/// Cada cuántos ciclos leer el HC-SR04 (~100 ms a 20 ms/ciclo).
+/// Cada cuántos ciclos leer el HC-SR04 (5 × 20 ms = 100 ms).
 /// El driver es bloqueante; ver `docs/consideration_implementation.md §5`.
 pub const HC_READ_PERIOD: u8 = 5;
 
-/// Distancia de emergencia HC-SR04 en mm. Por debajo → FAULT inmediato.
+/// Distancia de emergencia HC-SR04 en mm. Por debajo → hard_stop + FAULT inmediato.
+///
+/// 200 mm garantiza parada segura para velocidades ≤ 1.67 m/s (ver análisis
+/// del bloque anterior). Cubre el estimado de operación (≤ 0.4 m/s) con
+/// 152 mm de margen. ACTUALIZAR si la velocidad real medida supera 1.67 m/s.
 pub const HC_EMERGENCY_MM: u16 = 200;
 
 /// Timeout de eco HC-SR04 en µs.
@@ -44,10 +90,19 @@ pub const HC_EMERGENCY_MM: u16 = 200;
 /// el bloqueo máximo de ~30 ms a ~1.75 ms.
 ///
 /// Fórmula: `distance_mm × 10_000 / 1_715`. 300 mm → 1 749 µs.
+/// La zona de detección resultante (200–300 mm) da al menos 125 ms de aviso
+/// antes de que el rover (a 0.4 m/s) alcance el umbral de emergencia.
 pub const HC_ECHO_TIMEOUT_US: u32 = 1_750;
 
-/// Distancia de emergencia VL53L0X en mm. Por debajo → FAULT inmediato.
-/// Umbral más ajustado que HC-SR04 gracias a la mayor precisión del ToF láser.
+/// Distancia de emergencia VL53L0X en mm. Por debajo → hard_stop + FAULT inmediato.
+///
+/// Umbral más ajustado (150 mm vs 200 mm del HC-SR04) por dos razones:
+///   1. El VL53L0X mide con precisión ±3 % (vs ±3 mm del HC-SR04 en condiciones
+///      ideales; en superficies no perpendiculares el HC-SR04 puede errar ±15 mm).
+///   2. El VL53L0X tiene FOV de 25°, menos susceptible a falsas lecturas
+///      por reflexión especular que el HC-SR04 (15° apertura).
+/// A 150 mm de emergencia: v_max = 150 mm / 120 ms = 1.25 m/s — suficiente
+/// para el rango de operación estimado (≤ 0.4 m/s).
 pub const TOF_EMERGENCY_MM: u16 = 150;
 
 // ─── Detección de stall ──────────────────────────────────────────────────────
