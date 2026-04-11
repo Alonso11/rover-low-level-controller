@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 //! # Configuración del firmware — parámetros ajustables en tiempo de compilación
 //!
 //! Centraliza todas las constantes que afectan el comportamiento del rover.
@@ -96,18 +96,47 @@ pub const LIMIT_SPEED_CAP: i16 = 60;
 /// pero mayor latencia de parada. No bajar de 5 (400 ms máx.) para RF-005.
 pub const RAMP_STEP_SOFT: i16 = 10;
 
-/// Umbrales para driver L298N (2 A continuo / 3 A pico).
-pub const OC_WARN_L298N:  i32 = 1_200; // 60 % de 2 A
-pub const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2 A
-pub const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2 A
+/// Umbrales de sobrecorriente para driver L298N.
+///
+/// El L298N tolera 2 A continuos y 3 A de pico por canal (ST Microelectronics,
+/// 2000, *L298 Dual Full-Bridge Driver*, Table 3 — DC output current per channel).
+/// Los umbrales siguen la escala 60 % / 80 % / 100 % de la corriente continua
+/// nominal, práctica estándar en protección de motores industriales:
+///   NEMA MG 1-2021, §12.53: "Overcurrent protection should operate at
+///   115–125 % of rated current for continuous-duty motors."
+/// Usar 100 % (= 2 000 mA) como FAULT es conservador respecto al pico de 3 A;
+/// garantiza disparo antes de alcanzar la corriente de stall del motor.
+pub const OC_WARN_L298N:  i32 = 1_200; // 60 % de 2 A (operación prolongada con carga alta)
+pub const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2 A (reducir velocidad, safety → Limit)
+pub const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2 A (detención inmediata, safety → Fault)
 
-/// Umbrales para driver BTS7960 (43 A pico — indicativos, calibrar con motor real).
+/// Umbrales de sobrecorriente para driver BTS7960.
+///
+/// # ADVERTENCIA — Umbrales provisionales sin referencia al motor físico
+///
+/// El BTS7960 soporta 43 A de pico (Infineon, 2004, *BTS7960B Power Half-Bridge*,
+/// §6.1). Sin embargo, la corriente de stall del motor NFP-5840-31ZY-EN acoplado
+/// al BTS7960 es **desconocida** hasta realizar la medición en campo.
+///
+/// Los valores actuales (15 A FAULT) se eligieron como fracción del rango del
+/// sensor ACS712-20A (< 20 A) para evitar saturación del ADC, NO porque 15 A
+/// sea la corriente de stall del motor. Un motor con corriente de stall de 5 A
+/// podría quemarse sin que FAULT se dispare jamás.
+///
+/// # Procedimiento de calibración obligatorio antes de usar estos features
+/// 1. Conectar el motor al BTS7960 con el encoder en libre (sin carga mecánica).
+/// 2. Aplicar PWM = 100 % y bloquear el eje manualmente → medir I_stall con
+///    el ACS712. Repetir 3 veces y promediar.
+/// 3. Ajustar:  OC_FAULT_BTS = round(1.25 × I_stall_mA)
+///              OC_LIMIT_BTS = round(0.80 × OC_FAULT_BTS)
+///              OC_WARN_BTS  = round(0.60 × OC_FAULT_BTS)
+///    Ref.: NEMA MG 1-2021, §12.53 — 125 % de corriente nominal como trip de OC.
 #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
-pub const OC_WARN_BTS:  i32 = 8_000;  // ~20 % operativo
+pub const OC_WARN_BTS:  i32 = 8_000;  // PROVISIONAL: ~53 % de 15 A — recalibrar con motor real
 #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
-pub const OC_LIMIT_BTS: i32 = 12_000; // ~28 % operativo
+pub const OC_LIMIT_BTS: i32 = 12_000; // PROVISIONAL: ~80 % de 15 A — recalibrar con motor real
 #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
-pub const OC_FAULT_BTS: i32 = 15_000; // ~35 % operativo (< 20 A → dentro del rango 20A)
+pub const OC_FAULT_BTS: i32 = 15_000; // PROVISIONAL: < 20 A (rango ACS712-20A) — recalibrar
 
 /// Umbrales de sobrecorriente por motor `[FR, FL, CR, CL, RR, RL]`.
 /// Seleccionados en tiempo de compilación según el feature activo.
