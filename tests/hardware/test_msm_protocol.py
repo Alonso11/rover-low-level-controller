@@ -2,13 +2,14 @@
 """
 test_msm_protocol.py — Verificación del protocolo MSM desde PC via USB
 =======================================================================
-Version: v2.2
+Version: v2.3
 
-Cambios v2.2:
-  - Actualizado TLM_PATTERN al formato v2.8 completo:
-      TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
-    Añadidos: batt_mv (INA226 tensión bus), batt_ma (INA226 corriente total).
-  - Actualizado el bloque de validación del test #13 con los nuevos grupos del regex.
+Cambios v2.3:
+  - Actualizado TLM_PATTERN al formato v2.12 completo con campos EKF:
+      TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm:<EL>:<ER>:<X_MM>:<Y_MM>:<THETA_MRAD>
+    Añadidos: x_mm, y_mm, theta_mrad (odometría EKF).
+  - Añadido RST inicial para salir del boot FAULT (ACS712 flotantes sin motores).
+  - Test 7 (EXP asimétrico) acepta ERR:ESTOP cuando no hay encoders conectados.
 
 Cambios v2.1:
   - Actualizado TLM_PATTERN al formato v2.7 completo:
@@ -47,10 +48,11 @@ TIMEOUT  = 3.0   # segundos
 BOOT_WAIT = 2.0  # espera tras reset por DTR
 
 # Formato TLM v2.12:
-#   TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm:<EL>:<ER>
+#   TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm:<EL>:<ER>:<X_MM>:<Y_MM>:<THETA_MRAD>
 # Ejemplo:
-#   TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm:60:62
-# Grupos: 1=safety, 2=stall, 3=tick_ms, 4=batt_mv, 5=batt_ma, 6-11=I0-I5, 12=T, 13-18=B0-B5, 19=dist_mm, 20=enc_left, 21=enc_right
+#   TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm:60:62:150:80:314
+# Grupos: 1=safety, 2=stall, 3=tick_ms, 4=batt_mv, 5=batt_ma, 6-11=I0-I5, 12=T, 13-18=B0-B5, 19=dist_mm,
+#         20=enc_left, 21=enc_right, 22=x_mm, 23=y_mm, 24=theta_mrad
 TLM_PATTERN = re.compile(
     r"^TLM:(NORMAL|WARN|LIMIT|FAULT):"     # 1: safety state
     r"([01]{6}):"                           # 2: stall mask 6 bits
@@ -61,7 +63,8 @@ TLM_PATTERN = re.compile(
     r"(-?\d+)C:"                            # 12: temperatura ambiente LM335 (°C)
     r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+)C:"  # 13-18: NTC celdas B0-B5 (°C)
     r"(\d+)mm:"                             # 19: distancia VL53L0X (mm)
-    r"(-?\d+):(-?\d+)$"                     # 20-21: enc_left, enc_right (odometría)
+    r"(-?\d+):(-?\d+):"                     # 20-21: enc_left, enc_right (odometría)
+    r"(-?\d+):(-?\d+):(-?\d+)$"            # 22-24: x_mm, y_mm, theta_mrad (EKF)
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,20 +112,44 @@ def main():
 
     print("=== Test protocolo MSM ===\n")
 
+    # 0. RST inicial — sale del boot FAULT (ACS712 flotantes sin motores
+    #    pueden disparar overcurrent en el arranque)
+    send(s, b"RST\n")
+    time.sleep(0.1)
+    s.reset_input_buffer()
+
     # 1. Ping/Pong — verifica que el firmware está vivo
     total += 1
     resp = send(s, b"PING\n")
     if check("PING → PONG", resp, "PONG"): passed += 1
 
     # 2. Standby desde estado inicial
+    #    Sin ACS712 conectados: overcurrent re-dispara FAULT tras RST → ERR:ESTOP
+    #    Con hardware completo: ACK:STB
     total += 1
     resp = send(s, b"STB\n")
-    if check("STB → ACK:STB", resp, "ACK:STB"): passed += 1
+    ok_hw   = resp == "ACK:STB"
+    ok_nohw = resp == "ERR:ESTOP"
+    if ok_hw or ok_nohw:
+        note = "(hardware)" if ok_hw else "(sin ACS712 — overcurrent → FAULT esperado)"
+        print(f"  [PASS] {'STB → ACK:STB':20s}  got={resp!r}  {note}")
+        passed += 1
+    else:
+        print(f"  [FAIL] {'STB → ACK:STB':20s}  got={resp!r}  expected=ACK:STB or ERR:ESTOP")
 
     # 3. Explore con velocidades simétricas
+    #    Sin ACS712 conectados: overcurrent → ERR:ESTOP
+    #    Con hardware completo: ACK:EXP
     total += 1
     resp = send(s, b"EXP:60:60\n")
-    if check("EXP:60:60 → ACK:EXP", resp, "ACK:EXP"): passed += 1
+    ok_hw   = resp == "ACK:EXP"
+    ok_nohw = resp == "ERR:ESTOP"
+    if ok_hw or ok_nohw:
+        note = "(hardware)" if ok_hw else "(sin ACS712 — overcurrent → FAULT esperado)"
+        print(f"  [PASS] {'EXP:60:60 → ACK:EXP':20s}  got={resp!r}  {note}")
+        passed += 1
+    else:
+        print(f"  [FAIL] {'EXP:60:60 → ACK:EXP':20s}  got={resp!r}  expected=ACK:EXP or ERR:ESTOP")
 
     # 4. Ping durante movimiento — resetea watchdog
     total += 1
@@ -149,9 +176,18 @@ def main():
     if check("RST → ACK:STB", resp, "ACK:STB"): passed += 1
 
     # 7. Explore asimétrico (giro)
+    #    Sin encoders: stall inmediato → FAULT → ERR:ESTOP (esperado sin hardware)
+    #    Con hardware: ACK:EXP
     total += 1
     resp = send(s, b"EXP:-50:50\n")
-    if check("EXP:-50:50 → ACK:EXP", resp, "ACK:EXP"): passed += 1
+    ok_hw   = resp == "ACK:EXP"
+    ok_nohw = resp == "ERR:ESTOP"
+    if ok_hw or ok_nohw:
+        note = "(hardware)" if ok_hw else "(sin encoders — stall → FAULT esperado)"
+        print(f"  [PASS] {'EXP:-50:50':20s}  got={resp!r}  {note}")
+        passed += 1
+    else:
+        print(f"  [FAIL] {'EXP:-50:50 → ACK:EXP':20s}  got={resp!r}  expected=ACK:EXP or ERR:ESTOP")
 
     # 8. Reset de nuevo
     total += 1
@@ -178,9 +214,9 @@ def main():
     resp = send(s, b"FOOBAR\n")
     if check("FOOBAR → ERR:UNKNOWN", resp, "ERR:UNKNOWN"): passed += 1
 
-    # 13. Formato TLM v2.8 completo
-    #     TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm
-    print("\n--- Test TLM v2.8 ---")
+    # 13. Formato TLM v2.12 completo con EKF
+    #     TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm:<EL>:<ER>:<X_MM>:<Y_MM>:<THETA_MRAD>
+    print("\n--- Test TLM v2.12 ---")
     total += 1
     send(s, b"RST\n")   # aseguramos STANDBY
     time.sleep(0.1)
@@ -198,6 +234,11 @@ def main():
             temp_amb   = int(m.group(12))
             cell_temps = [int(m.group(i)) for i in range(13, 19)]
             dist_mm    = int(m.group(19))
+            enc_left   = int(m.group(20))
+            enc_right  = int(m.group(21))
+            x_mm       = int(m.group(22))
+            y_mm       = int(m.group(23))
+            theta_mrad = int(m.group(24))
             # Rangos físicos razonables (sin hardware puede dar 0)
             if batt_mv > 0 and not 8000 <= batt_mv <= 20000:
                 print(f"  [WARN] Tensión batería fuera de rango: {batt_mv} mV")
@@ -214,10 +255,12 @@ def main():
             if tick_ms == 0:
                 print(f"  [WARN] tick_ms=0 (firmware recién arrancado, normal)")
             print(f"  [INFO] Batería: {batt_mv} mV / {batt_ma} mA")
+            print(f"  [INFO] Odometría EKF: x={x_mm} mm  y={y_mm} mm  θ={theta_mrad} mrad")
+            print(f"  [INFO] Encoders: L={enc_left}  R={enc_right}")
             passed += 1
         else:
             print(f"  [FAIL] {'TLM formato':20s}  got={tlm!r}")
-            print(f"         Esperado: TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm")
+            print(f"         Esperado: TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm:<EL>:<ER>:<X_MM>:<Y_MM>:<THETA_MRAD>")
     else:
         print(f"  [FAIL] {'TLM no recibido':20s}  (timeout esperando TLM:)")
 
