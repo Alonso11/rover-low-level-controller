@@ -1,9 +1,26 @@
-// Version: v1.0
+// Version: v1.1
 //! # Máquina de Estados Maestra (MSM) — Nodo B / Arduino Mega
 
 const WATCHDOG_MAX: u16 = 100;
 const AVOID_SPEED: i16 = 60;
 const RETREAT_SPEED: i16 = -50;
+
+/// Modo de selección de banco de batería para los puentes H.
+///
+/// Controlado por el módulo relay (src/relay.rs, pines D40/D41).
+/// Permite al HLC o GCS seleccionar la fuente de potencia de los motores
+/// en tiempo de ejecución vía comando `BNK:N`.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BankMode {
+    /// Bank 2 activo, Bank 3 en espera — operación normal.
+    Bank2Only,
+    /// Bank 3 activo, Bank 2 cortado — failover manual.
+    Bank3Only,
+    /// Ambos bancos activos en paralelo — máxima corriente disponible.
+    BothBanks,
+    /// Ambos bancos cortados — apagado de motores a nivel hardware.
+    AllOff,
+}
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum AvoidDir { Left, Right }
@@ -22,6 +39,13 @@ pub enum Command {
     /// por el HLC, no un fallo hardware del LLC. El LLC reporta "SFE" en TLM.
     Safe,
     Reset,
+    /// Selección de banco de batería para motores (relay D40/D41).
+    ///
+    /// - `BNK:2`  → Bank2Only  (normal)
+    /// - `BNK:3`  → Bank3Only  (failover)
+    /// - `BNK:12` → BothBanks  (paralelo)
+    /// - `BNK:0`  → AllOff     (corte total — permitido en cualquier estado)
+    BankSelect(BankMode),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -82,6 +106,8 @@ pub enum Response {
     Pong,
     Ack(RoverState),
     Telemetry { safety: SafetyState, stall_mask: u8, sensors: SensorFrame },
+    /// Cambio de banco de batería aplicado. main.rs debe llamar relay.set_mode().
+    BankChange(BankMode),
     ErrEstop,
     ErrUnknown,
     ErrWatchdog,
@@ -165,6 +191,12 @@ impl MasterStateMachine {
                 self.drive = DriveOutput::STOP;
                 Response::Ack(RoverState::Safe)
             }
+            // BNK:0 (AllOff) siempre permitido — es un corte de emergencia.
+            // BNK:2/3/12 bloqueados en FAULT/SAFE hasta RST explícito.
+            Command::BankSelect(BankMode::AllOff) => Response::BankChange(BankMode::AllOff),
+            Command::BankSelect(_) if self.state == RoverState::Fault
+                                   || self.state == RoverState::Safe => Response::ErrEstop,
+            Command::BankSelect(mode) => Response::BankChange(mode),
         }
     }
 
@@ -212,8 +244,20 @@ pub fn parse_command(bytes: &[u8]) -> Option<Command> {
         b"RST"  => Some(Command::Reset),
         _ if bytes.starts_with(b"EXP:") => parse_explore(&bytes[4..]),
         _ if bytes.starts_with(b"AVD:") => parse_avoid(&bytes[4..]),
+        _ if bytes.starts_with(b"BNK:") => parse_bank(&bytes[4..]),
         _ => None,
     }
+}
+
+fn parse_bank(bytes: &[u8]) -> Option<Command> {
+    let mode = match bytes {
+        b"2"  => BankMode::Bank2Only,
+        b"3"  => BankMode::Bank3Only,
+        b"12" => BankMode::BothBanks,
+        b"0"  => BankMode::AllOff,
+        _     => return None,
+    };
+    Some(Command::BankSelect(mode))
 }
 
 fn parse_explore(bytes: &[u8]) -> Option<Command> {
@@ -245,13 +289,25 @@ fn parse_i16(bytes: &[u8]) -> Option<i16> {
 
 pub fn format_response<'a>(resp: Response, buf: &'a mut [u8]) -> &'a [u8] {
     match resp {
-        Response::Pong           => copy_literal(buf, b"PONG\n"),
-        Response::ErrEstop       => copy_literal(buf, b"ERR:ESTOP\n"),
-        Response::ErrUnknown     => copy_literal(buf, b"ERR:UNKNOWN\n"),
-        Response::ErrWatchdog    => copy_literal(buf, b"ERR:WDOG\n"),
-        Response::Ack(state)     => format_ack(buf, state_label(state)),
+        Response::Pong                   => copy_literal(buf, b"PONG\n"),
+        Response::ErrEstop               => copy_literal(buf, b"ERR:ESTOP\n"),
+        Response::ErrUnknown             => copy_literal(buf, b"ERR:UNKNOWN\n"),
+        Response::ErrWatchdog            => copy_literal(buf, b"ERR:WDOG\n"),
+        Response::Ack(state)             => format_ack(buf, state_label(state)),
+        Response::BankChange(mode)       => format_bank_ack(buf, mode),
         Response::Telemetry { safety, stall_mask, sensors } => format_tlm(buf, safety, stall_mask, sensors),
     }
+}
+
+fn format_bank_ack<'a>(buf: &'a mut [u8], mode: BankMode) -> &'a [u8] {
+    // Formato: "ACK:BNK:N\n"  donde N = 0, 2, 3, 12
+    let label: &[u8] = match mode {
+        BankMode::Bank2Only => b"ACK:BNK:2\n",
+        BankMode::Bank3Only => b"ACK:BNK:3\n",
+        BankMode::BothBanks => b"ACK:BNK:12\n",
+        BankMode::AllOff    => b"ACK:BNK:0\n",
+    };
+    copy_literal(buf, label)
 }
 
 fn state_label(state: RoverState) -> &'static [u8] {

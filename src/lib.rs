@@ -1,4 +1,4 @@
-// Version: v1.4
+// Version: v1.5
 #![no_std]
 #![cfg_attr(target_arch = "avr", feature(abi_avr_interrupt))]
 
@@ -30,3 +30,8 @@ pub mod ramp;
 
 // Constantes de configuración — sin dependencias de HAL, siempre disponibles.
 pub mod config;
+
+// Control del módulo relay SRD-05VDC-SL-C — requiere HAL (pines GPIO Output).
+// Gestiona los dos bancos de batería de los puentes H (D40=Bank2, D41=Bank3).
+#[cfg(feature = "avr")]
+pub mod relay;

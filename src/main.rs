@@ -1,4 +1,4 @@
-// Version: v2.12
+// Version: v2.13
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -46,9 +46,10 @@ use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X,
 use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
 use rover_low_level_controller::ramp::DriveRamp;
 use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
+use rover_low_level_controller::relay::RelayModule;
 use arduino_hal::prelude::*;
 use rover_low_level_controller::state_machine::{
-    format_response, parse_command, Command, MasterStateMachine, Response, RoverState,
+    format_response, parse_command, BankMode, Command, MasterStateMachine, Response, RoverState,
     SafetyState, SensorFrame,
 };
 
@@ -255,6 +256,15 @@ fn main() -> ! {
     let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4),  pins.d36.into_output(), pins.d37.into_output(), false);
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
 
+    // ── Módulo relay 2 canales — D40(IN1/Bank2), D41(IN2/Bank3) ─────────────
+    // Active LOW: LOW = relay energizado = banco habilitado.
+    // Arranca con Bank 2 activo, Bank 3 en espera.
+    // En FAULT/SAFE → emergency_off() pone ambos HIGH → motores sin potencia.
+    let mut relay = RelayModule::new(
+        pins.d40.into_output(),
+        pins.d41.into_output(),
+    );
+
     // ── HC-SR04 — D38(Trigger), D39(Echo) ───────────────────────────────────
     // with_timeout limita el bloqueo a ~1.75 ms (rango útil ~300 mm).
     // Solo usamos el sensor para detección de emergencia (< HC_EMERGENCY_MM),
@@ -369,7 +379,7 @@ fn main() -> ! {
     let mut stall_timers = [0u16; 6];
 
     iface.log(read_reset_cause());
-    iface.log("=== ROVER OLYMPUS v2.12 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC ===");
+    iface.log("=== ROVER OLYMPUS v2.13 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -401,7 +411,8 @@ fn main() -> ! {
             if let Ok(mm) = hcsr04.measure_mm() {
                 if mm < HC_EMERGENCY_MM {
                     let resp = msm.process(Command::Fault);
-                    sync_drive!(hard, rover, msm, ramp); // obstáculo físico: stop inmediato
+                    relay.emergency_off(); // corte hardware: obstáculo físico
+                    sync_drive!(hard, rover, msm, ramp);
                     iface.send_response(format_response(resp, &mut resp_buf));
                 }
             }
@@ -411,7 +422,8 @@ fn main() -> ! {
                     sensor_frame.dist_mm = mm;
                     if mm < TOF_EMERGENCY_MM {
                         let resp = msm.process(Command::Fault);
-                        sync_drive!(hard, rover, msm, ramp); // ToF láser: stop inmediato
+                        relay.emergency_off(); // corte hardware: ToF láser
+                        sync_drive!(hard, rover, msm, ramp);
                         iface.send_response(format_response(resp, &mut resp_buf));
                     }
                 }
@@ -470,7 +482,8 @@ fn main() -> ! {
             sensor_frame.enc_right = counts[0].wrapping_add(counts[2]).wrapping_add(counts[4]);
             if stall_mask != 0 {
                 msm.update_safety(stall_mask);
-                sync_drive!(hard, rover, msm, ramp); // stall encoder: motor bloqueado, corriente alta
+                relay.emergency_off(); // corte hardware: stall encoder detectado
+                sync_drive!(hard, rover, msm, ramp);
                 iface.send_response(format_response(msm.telemetry(stall_mask, sensor_frame), &mut resp_buf));
             }
         }
@@ -490,7 +503,19 @@ fn main() -> ! {
                 Some(cmd) => msm.process(cmd),
                 None      => Response::ErrUnknown,
             };
-            sync_drive!(soft, rover, msm, ramp); // comando GCS: rampa suave (STB, EXP, AVD, RET, FLT)
+            // Aplicar efectos secundarios de relay según la respuesta.
+            match response {
+                Response::BankChange(mode) => relay.set_mode(mode),
+                Response::Ack(RoverState::Fault) | Response::Ack(RoverState::Safe) => {
+                    relay.emergency_off(); // FLT/SAFE por comando GCS
+                }
+                Response::Ack(RoverState::Standby) if msm.state == RoverState::Standby => {
+                    // RST regresa a Standby: restaurar Bank 2 (relay vuelve a normal)
+                    relay.reset_normal();
+                }
+                _ => {}
+            }
+            sync_drive!(soft, rover, msm, ramp);
             iface.send_response(format_response(response, &mut resp_buf));
         }
 
@@ -516,7 +541,8 @@ fn main() -> ! {
             }
             if fault_mask != 0 {
                 msm.update_overcurrent(SafetyState::FaultStall);
-                sync_drive!(hard, rover, msm, ramp); // sobrecorriente OC_FAULT: motor en riesgo ahora
+                relay.emergency_off(); // corte hardware: sobrecorriente OC_FAULT rápida
+                sync_drive!(hard, rover, msm, ramp);
                 iface.send_response(format_response(
                     msm.telemetry(fault_mask, sensor_frame), &mut resp_buf));
             }
@@ -575,6 +601,7 @@ fn main() -> ! {
             if sensor_frame.batt_mv > 5000 && sensor_frame.batt_mv < 12000 {
                 if msm.state != RoverState::Safe && msm.state != RoverState::Fault {
                     msm.process(Command::Safe);
+                    relay.emergency_off(); // corte hardware: batería crítica Bank 1
                     sync_drive!(hard, rover, msm, ramp);
                     iface.log("ALARM:LOW_BATTERY_SAFE_MODE");
                 }
