@@ -278,6 +278,9 @@ fn main() -> ! {
     // Requiere shunt externo de INA226_SHUNT_MOHM mΩ en serie con la batería.
     let mut ina = INA226::new();
     let mut mpu = MPU6050::new();
+    let mut gyro_bias_z: f32 = 0.0;
+    let mut accel_bias_x: f32 = 0.0;
+    let mut accel_bias_z: f32 = 9.80665;
     if mpu.init() { iface.log("INFO:MPU6050_OK"); } else { iface.log("WARN:MPU6050_FAIL"); }
         iface.log("INFO:Calibrating_IMU...");
         let mut sum_gz = 0.0; let mut sum_ax = 0.0; let mut sum_az = 0.0;
@@ -359,9 +362,6 @@ fn main() -> ! {
     let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
 
     // --- Calibración de Bias IMU ---
-    let mut gyro_bias_z: f32 = 0.0;
-    let mut accel_bias_x: f32 = 0.0;
-    let mut accel_bias_z: f32 = 9.80665;
     let mut calib_samples: u16 = 0;
 
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
@@ -650,5 +650,31 @@ fn main() -> ! {
         // delay_ms restaurado: la ISR USART0_RX garantiza que ningún byte
         // se pierde durante el bloqueo. Ver docs/debug_usart_overflow.md.
         arduino_hal::delay_ms(LOOP_MS);
+    }
+}
+
+fn write_u32(val: u32, buf: &mut [u8], i: &mut usize) {
+    if val == 0 {
+        buf[*i] = b'0'; *i += 1; return;
+    }
+    let mut tmp = [0u8; 10];
+    let mut len = 0;
+    let mut v = val;
+    while v > 0 {
+        tmp[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    for k in (0..len).rev() {
+        buf[*i] = tmp[k]; *i += 1;
+    }
+}
+
+fn write_i32(val: i32, buf: &mut [u8], i: &mut usize) {
+    if val < 0 {
+        buf[*i] = b'-'; *i += 1;
+        write_u32(val.wrapping_neg() as u32, buf, i);
+    } else {
+        write_u32(val as u32, buf, i);
     }
 }
