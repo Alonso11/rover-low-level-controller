@@ -279,6 +279,17 @@ pub const BATT_FAULT_C: i32 = 65; // 15 °C antes del onset de descomposición S
 pub const AMBIENT_TEMP_MIN_C: i32 = -40;
 pub const AMBIENT_TEMP_MAX_C: i32 =  80;
 
+/// Umbral de temperatura ambiente para Safe Mode directo en el LLC (EPS-REQ-003).
+///
+/// Si la temperatura ambiente supera este valor, el LLC entra en Safe Mode
+/// sin esperar al HLC. Esto cubre el escenario de pérdida de enlace TLM
+/// con el rover en un entorno de alta temperatura (e.g. exposición solar directa).
+///
+/// Valor: 60 °C — por debajo del OTP del ATmega2560 (85 °C) y del umbral de
+/// inicio de degradación de la electrónica de consumo (70 °C). El HLC también
+/// monitorea la temperatura vía TLM con umbral más conservador (≥ 55 °C → WARN).
+pub const AMBIENT_SAFE_C: i32 = 60;
+
 /// Rango plausible de temperatura para sensores NTC de baterías.
 pub const BATT_TEMP_MIN_C: i32 = -20;
 pub const BATT_TEMP_MAX_C: i32 = 100;

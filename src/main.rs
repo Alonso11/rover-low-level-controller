@@ -1,4 +1,4 @@
-// Version: v2.13
+// Version: v2.14
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -278,15 +278,27 @@ fn main() -> ! {
     // Los pines son controlados directamente por soft_i2c (registros PORTL/DDRL),
     // no se consumen como recursos arduino-hal. init() puede fallar si el sensor
     // no responde; el driver queda en ready=false y read_mm() no se llamará.
+    // Se loguea WARN para que el operador sepa que la detección ToF está inactiva
+    // y el sistema opera solo con HC-SR04 para emergencias de obstáculos.
     let mut tof = VL53L0X::new();
     if tof.init() {
         tof.start_continuous();
+        iface.log("INFO:TOF_OK");
+    } else {
+        iface.log("WARN:TOF_FAIL");
     }
 
     // ── INA226 — D42(SDA/PL7), D43(SCL/PL6), dirección 0x40 ────────────────
     // Comparte el bus soft I2C con VL53L0X (0x29). Sin conflicto de dirección.
     // Requiere shunt externo de INA226_SHUNT_MOHM mΩ en serie con la batería.
+    // WARN si falla: el monitoreo de batería (batt_mv/batt_ma) queda deshabilitado
+    // y la protección LLC-level de batería baja (< 12 V) no opera.
     let mut ina = INA226::new();
+    if ina.init(INA226_SHUNT_MOHM) {
+        iface.log("INFO:INA226_OK");
+    } else {
+        iface.log("WARN:INA226_FAIL");
+    }
     let mut mpu = MPU6050::new();
     let mut gyro_bias_z: f32 = 0.0;
     let mut accel_bias_x: f32 = 0.0;
@@ -306,7 +318,6 @@ fn main() -> ! {
         accel_bias_x = sum_ax / 50.0;
         accel_bias_z = sum_az / 50.0;
         iface.log("INFO:IMU_Calibrated");
-    ina.init(INA226_SHUNT_MOHM);
 
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
     // ACS712 (corriente):         A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
@@ -379,7 +390,7 @@ fn main() -> ! {
     let mut stall_timers = [0u16; 6];
 
     iface.log(read_reset_cause());
-    iface.log("=== ROVER OLYMPUS v2.13 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY ===");
+    iface.log("=== ROVER OLYMPUS v2.14 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -585,8 +596,23 @@ fn main() -> ! {
             let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
             let t_amb = lm335.read_celsius(raw_t);
             match check_temp_c(t_amb, AMBIENT_TEMP_MIN_C, AMBIENT_TEMP_MAX_C) {
-                Some(t_valid) => sensor_frame.temp_c = t_valid,
-                None          => iface.log("WARN:LM335_OOR"),
+                Some(t_valid) => {
+                    sensor_frame.temp_c = t_valid;
+                    // Protección térmica LLC-level (EPS-REQ-003): si la temperatura
+                    // ambiente supera AMBIENT_SAFE_C (60 °C), entrar en Safe Mode
+                    // directamente sin esperar al HLC. Cubre el escenario de pérdida
+                    // de enlace TLM con el rover en un entorno de alta temperatura.
+                    if t_valid >= AMBIENT_SAFE_C
+                        && msm.state != RoverState::Safe
+                        && msm.state != RoverState::Fault
+                    {
+                        msm.process(Command::Safe);
+                        relay.emergency_off();
+                        sync_drive!(hard, rover, msm, ramp);
+                        iface.log("ALARM:AMBIENT_OVERHEAT_SAFE_MODE");
+                    }
+                }
+                None => iface.log("WARN:LM335_OOR"),
             }
 
             // INA226 — tensión y corriente total de batería
