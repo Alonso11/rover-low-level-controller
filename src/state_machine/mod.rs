@@ -84,12 +84,15 @@ pub struct SensorFrame {
     pub currents: [i32; 6],
     pub temp_c: i32,
     pub batt_temps: [i32; 6],
+    /// Distancia VL53L0X en mm (rango 3 cm–2 m, emergencia <150 mm).
     pub dist_mm: u16,
     pub enc_left: i32,
     pub enc_right: i32,
     pub x_mm: i32,
     pub y_mm: i32,
     pub theta_mrad: i16,
+    /// Distancia TF02 en mm (rango 40 cm–22 m). 0 = sin lectura válida aún.
+    pub dist_far_mm: u16,
 }
 
 impl SensorFrame {
@@ -97,7 +100,7 @@ impl SensorFrame {
         tick_ms: 0, batt_mv: 0, batt_ma: 0,
         currents: [0; 6], temp_c: 0, batt_temps: [0; 6],
         dist_mm: 0, enc_left: 0, enc_right: 0,
-        x_mm: 0, y_mm: 0, theta_mrad: 0,
+        x_mm: 0, y_mm: 0, theta_mrad: 0, dist_far_mm: 0,
     };
 }
 
@@ -388,6 +391,11 @@ fn format_tlm<'a>(buf: &'a mut [u8], safety: SafetyState, stall_mask: u8, sensor
     write_i32(sensors.y_mm, buf, &mut i);
     buf[i] = b':'; i += 1;
     write_i32(sensors.theta_mrad as i32, buf, &mut i);
+    // dist_far_mm: TF02 largo alcance (campo opcional al final — backward compat)
+    buf[i] = b':'; i += 1;
+    write_u32(sensors.dist_far_mm as u32, buf, &mut i);
+    buf[i] = b'm'; i += 1;
+    buf[i] = b'm'; i += 1;
     buf[i] = b'\n'; i += 1;
     &buf[..i]
 }

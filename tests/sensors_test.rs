@@ -1,10 +1,27 @@
-// Version: v1.3
-// Pruebas unitarias de los drivers analógicos ACS712, LM335 y NTCThermistor,
-// y de la función de plausibilidad check_temp_c.
+// Version: v1.4
+// Pruebas unitarias de los drivers analógicos ACS712, LM335, NTCThermistor,
+// TF02 LiDAR UART, y de la función de plausibilidad check_temp_c.
 // Se ejecutan en PC sin necesidad del Arduino.
 // Comando: ./test_native.sh  (o ver test_native.sh para el comando completo)
 
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, check_temp_c};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, TF02, check_temp_c};
+
+/// Construye un frame TF02 válido de 9 bytes para tests.
+fn build_frame(dist_cm: u16, strength: u16, sig: u8) -> [u8; 9] {
+    let mut f = [0u8; 9];
+    f[0] = 0x59; f[1] = 0x59;
+    f[2] = (dist_cm & 0xFF) as u8;
+    f[3] = (dist_cm >> 8) as u8;
+    f[4] = (strength & 0xFF) as u8;
+    f[5] = (strength >> 8) as u8;
+    f[6] = sig;
+    f[7] = 0x03;
+    let check: u8 = f[0].wrapping_add(f[1]).wrapping_add(f[2])
+        .wrapping_add(f[3]).wrapping_add(f[4]).wrapping_add(f[5])
+        .wrapping_add(f[6]).wrapping_add(f[7]);
+    f[8] = check;
+    f
+}
 
 // ─── ACS712-30A ───────────────────────────────────────────────────────────────
 
@@ -550,4 +567,162 @@ fn test_check_temp_c_fuera_por_arriba() {
 fn test_check_temp_c_fuera_por_abajo() {
     assert_eq!(check_temp_c(-21, -20, 100), None);
     assert_eq!(check_temp_c(-273, -20, 100), None);
+}
+
+// ─── TF02 LiDAR UART ─────────────────────────────────────────────────────────
+
+/// Alimenta todos los bytes de un frame al driver y retorna el resultado final.
+fn feed_frame(tf02: &mut TF02, frame: &[u8; 9]) -> bool {
+    let mut result = false;
+    for &b in frame.iter() {
+        result = tf02.feed(b);
+    }
+    result
+}
+
+#[test]
+fn test_tf02_frame_valido_1m() {
+    // 100 cm = 1000 mm, SIG=8 (fiable)
+    let frame = build_frame(100, 800, 8);
+    let mut tf02 = TF02::new();
+    assert!(feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 1000);
+    assert_eq!(tf02.last_strength, 800);
+}
+
+#[test]
+fn test_tf02_frame_valido_5m() {
+    // 500 cm = 5000 mm, SIG=7 (fiable)
+    let frame = build_frame(500, 600, 7);
+    let mut tf02 = TF02::new();
+    assert!(feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 5000);
+}
+
+#[test]
+fn test_tf02_distancia_en_mm_es_cm_por_10() {
+    // Verificar la conversión cm → mm
+    for dist_cm in [40u16, 100, 250, 500, 1000, 2100] {
+        let frame = build_frame(dist_cm, 500, 8);
+        let mut tf02 = TF02::new();
+        assert!(feed_frame(&mut tf02, &frame));
+        assert_eq!(tf02.last_dist_mm, dist_cm * 10,
+            "dist_cm={} → esperado {}mm", dist_cm, dist_cm * 10);
+    }
+}
+
+#[test]
+fn test_tf02_checksum_incorrecto_rechazado() {
+    let mut frame = build_frame(100, 800, 8);
+    frame[8] = frame[8].wrapping_add(1); // corromper checksum
+    let mut tf02 = TF02::new();
+    assert!(!feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 0); // sin lectura
+}
+
+#[test]
+fn test_tf02_sig_no_fiable_rechazado() {
+    // SIG 1-6 no son fiables según datasheet §8.2
+    for sig in [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06] {
+        let frame = build_frame(100, 800, sig);
+        let mut tf02 = TF02::new();
+        assert!(!feed_frame(&mut tf02, &frame), "sig=0x{:02X} debería rechazarse", sig);
+    }
+}
+
+#[test]
+fn test_tf02_sig_fiable_aceptado() {
+    for sig in [7u8, 8] {
+        let frame = build_frame(100, 800, sig);
+        let mut tf02 = TF02::new();
+        assert!(feed_frame(&mut tf02, &frame), "sig={} debería aceptarse", sig);
+    }
+}
+
+#[test]
+fn test_tf02_out_of_range_2200cm() {
+    // dist_cm == 2200 → señal no confiable (flag del sensor)
+    let frame = build_frame(2200, 0, 8);
+    let mut tf02 = TF02::new();
+    assert!(!feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 0);
+}
+
+#[test]
+fn test_tf02_header_incorrecto_rechazado() {
+    let mut frame = build_frame(100, 800, 8);
+    frame[1] = 0x58; // segundo header incorrecto
+    let mut tf02 = TF02::new();
+    assert!(!feed_frame(&mut tf02, &frame));
+}
+
+#[test]
+fn test_tf02_sincronizacion_con_basura_previa() {
+    // Bytes de basura antes del frame → driver debe sincronizarse
+    let frame = build_frame(300, 700, 8);
+    let mut tf02 = TF02::new();
+    // Inyectar basura primero (sin dejar un 0x59 colgado al final → idx=0)
+    for &noise in &[0xAA, 0x00, 0xFF, 0x59, 0x00, 0x11] {
+        tf02.feed(noise);
+    }
+    // Ahora el frame válido
+    assert!(feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 3000);
+}
+
+#[test]
+fn test_tf02_frame_parcial_no_emite() {
+    // Feed de solo 5 bytes → sin resultado
+    let frame = build_frame(100, 800, 8);
+    let mut tf02 = TF02::new();
+    for &b in &frame[..5] {
+        assert!(!tf02.feed(b));
+    }
+    assert_eq!(tf02.last_dist_mm, 0);
+}
+
+#[test]
+fn test_tf02_dos_frames_consecutivos() {
+    // Dos frames válidos seguidos → actualiza last_dist_mm correctamente
+    let frame1 = build_frame(100, 800, 8);
+    let frame2 = build_frame(200, 700, 7);
+    let mut tf02 = TF02::new();
+    assert!(feed_frame(&mut tf02, &frame1));
+    assert_eq!(tf02.last_dist_mm, 1000);
+    assert!(feed_frame(&mut tf02, &frame2));
+    assert_eq!(tf02.last_dist_mm, 2000);
+}
+
+#[test]
+fn test_tf02_reset_limpia_estado() {
+    let frame = build_frame(100, 800, 8);
+    let mut tf02 = TF02::new();
+    // Alimentar 4 bytes (frame incompleto)
+    for &b in &frame[..4] { tf02.feed(b); }
+    // Reset → el estado debe limpiar y re-sincronizar
+    tf02.reset();
+    // Después del reset, un frame completo debe procesarse correctamente
+    assert!(feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 1000);
+}
+
+#[test]
+fn test_tf02_rango_maximo_valido_2199cm() {
+    // 2199 cm = 21990 mm es el máximo válido (< 2200)
+    let frame = build_frame(2199, 50, 7);
+    let mut tf02 = TF02::new();
+    assert!(feed_frame(&mut tf02, &frame));
+    assert_eq!(tf02.last_dist_mm, 21990);
+}
+
+#[test]
+fn test_tf02_checksum_formula_all_8_bytes() {
+    // Verificar que el checksum incluye B0+B1+B2+B3+B4+B5+B6+B7
+    // (misma familia que TF-Luna, suma de los 8 bytes precedentes)
+    let frame = build_frame(100, 800, 8);
+    let expected_check: u8 = frame[0].wrapping_add(frame[1]).wrapping_add(frame[2])
+        .wrapping_add(frame[3]).wrapping_add(frame[4]).wrapping_add(frame[5])
+        .wrapping_add(frame[6]).wrapping_add(frame[7]);
+    assert_eq!(frame[8], expected_check,
+        "build_frame debe producir checksum correcto B0..B7");
 }

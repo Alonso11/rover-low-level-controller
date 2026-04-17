@@ -1,4 +1,4 @@
-// Version: v2.14
+// Version: v2.15
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -42,7 +42,7 @@ use rover_low_level_controller::motor_control::SixWheelRover;
 use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, check_temp_c};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, TF02, check_temp_c};
 use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
 use rover_low_level_controller::ramp::DriveRamp;
 use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
@@ -319,6 +319,22 @@ fn main() -> ! {
         accel_bias_z = sum_az / 50.0;
         iface.log("INFO:IMU_Calibrated");
 
+    // ── USART2: TF02 LiDAR — D17(RX2) @ 115200 baud ─────────────────────────
+    // TF02 transmite frames de 9 bytes a 100 Hz sin necesitar init ni comandos.
+    // Solo conectamos RX2 (verde/TX del sensor). El blanco/RX del sensor queda libre.
+    // Voltaje LVTTL 0-3.3 V: el Mega acepta 3.3 V como HIGH sin level-shifter.
+    // USART1 ocupado por INT2/INT3 (encoders CR/CL). USART3 reservado para RPi5.
+    // Baud 115200 a 16 MHz con U2X2=1: UBRR2 = 16 (error 2.1 %).
+    unsafe {
+        let p2 = &(*avr_device::atmega2560::USART2::ptr());
+        p2.ubrr2().write(|w| w.bits(16));
+        p2.ucsr2a().write(|w| w.u2x2().set_bit());
+        p2.ucsr2b().write(|w| w.rxen2().set_bit()); // solo RX
+        // UCSR2C: reset default = 0x06 (8-bit, no parity, 1 stop) — no touch
+    }
+    let mut tf02 = TF02::new();
+    iface.log("INFO:TF02_INIT");
+
     // ── ADC + sensores analógicos ─────────────────────────────────────────────
     // ACS712 (corriente):         A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
     // LM335  (temp. ambiente):    A6
@@ -390,7 +406,7 @@ fn main() -> ! {
     let mut stall_timers = [0u16; 6];
 
     iface.log(read_reset_cause());
-    iface.log("=== ROVER OLYMPUS v2.14 — MSM + HC-SR04 + VL53L0X + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY ===");
+    iface.log("=== ROVER OLYMPUS v2.15 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -437,6 +453,19 @@ fn main() -> ! {
                         sync_drive!(hard, rover, msm, ramp);
                         iface.send_response(format_response(resp, &mut resp_buf));
                     }
+                }
+            }
+        }
+
+        // 2b. TF02 — drenar bytes disponibles de USART2 (non-blocking)
+        //     A 100 Hz × 9 bytes = 900 B/s → ~18 bytes por ciclo de 20 ms.
+        //     Solo actualiza dist_far_mm; el HLC decide la evasión de obstáculos.
+        unsafe {
+            let p2 = &(*avr_device::atmega2560::USART2::ptr());
+            while p2.ucsr2a().read().rxc2().bit_is_set() {
+                let byte = p2.udr2().read().bits();
+                if tf02.feed(byte) {
+                    sensor_frame.dist_far_mm = tf02.last_dist_mm;
                 }
             }
         }

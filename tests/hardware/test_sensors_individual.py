@@ -39,7 +39,8 @@ SENSOR_RANGES = {
     "batt_t3":      (15,       45, "Temperatura NTC celda 3",    "NTC ADC A4"),
     "batt_t4":      (15,       45, "Temperatura NTC celda 4",    "NTC ADC A5"),
     "batt_t5":      (15,       45, "Temperatura NTC celda 5",    "NTC ADC A6"),
-    "dist_mm":      (1,      8000, "Distancia VL53L0X",          "VL53L0X I2C 0x29"),
+    "dist_mm":      (1,      8000, "Distancia VL53L0X (corta)",  "VL53L0X I2C 0x29"),
+    "dist_far_mm":  (400,  22000, "Distancia TF02 (largo alc.)", "TF02 USART2 D17"),
 }
 
 # Campos que se verifican manualmente (encoders, EKF pose)
@@ -69,6 +70,7 @@ TLM_RE = re.compile(
     r"(\d+)mm:"         # 19 dist_mm
     r"(-?\d+):(-?\d+):" # 20-21 enc_left enc_right
     r"(-?\d+):(-?\d+):(-?\d+)"  # 22-24 x_mm y_mm theta_mrad
+    r"(?::(\d+)mm)?"            # 25 dist_far_mm TF02 (opcional, ≥ v2.15)
 )
 
 
@@ -101,7 +103,8 @@ def parse_tlm(line: str) -> dict | None:
         "enc_right":  int(g[20]),
         "x_mm":       int(g[21]),
         "y_mm":       int(g[22]),
-        "theta_mrad": int(g[23]),
+        "theta_mrad":  int(g[23]),
+        "dist_far_mm": int(g[24]) if g[24] is not None else 0,
     }
 
 

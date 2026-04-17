@@ -324,7 +324,7 @@ fn test_format_tlm_normal_no_stall() {
         stall_mask: 0,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:NORMAL:000000:0ms:0mV:0mA:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm:0:0:0:0:0\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:NORMAL:000000:0ms:0mV:0mA:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm:0:0:0:0:0:0mm\n");
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn test_format_tlm_fault_with_stall() {
         stall_mask: 0b000110,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:FAULT:000110:0ms:0mV:0mA:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm:0:0:0:0:0\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:FAULT:000110:0ms:0mV:0mA:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm:0:0:0:0:0:0mm\n");
 }
 
 #[test]
@@ -347,7 +347,7 @@ fn test_format_tlm_warn() {
         stall_mask: 0,
         sensors: SensorFrame::ZERO,
     };
-    assert_eq!(format_response(resp, &mut buf), b"TLM:WARN:000000:0ms:0mV:0mA:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm:0:0:0:0:0\n");
+    assert_eq!(format_response(resp, &mut buf), b"TLM:WARN:000000:0ms:0mV:0mA:0:0:0:0:0:0:0C:0:0:0:0:0:0C:0mm:0:0:0:0:0:0mm\n");
 }
 
 #[test]
@@ -362,7 +362,7 @@ fn test_format_tlm_with_sensor_data() {
         batt_temps: [30, 31, 29, 30, 28, 32],
         dist_mm: 0,
         enc_left: 0,
-        enc_right: 0, x_mm: 0, y_mm: 0, theta_mrad: 0,
+        enc_right: 0, x_mm: 0, y_mm: 0, theta_mrad: 0, dist_far_mm: 0,
     };
     let resp = Response::Telemetry {
         safety: SafetyState::Normal,
@@ -371,7 +371,7 @@ fn test_format_tlm_with_sensor_data() {
     };
     assert_eq!(
         format_response(resp, &mut buf),
-        b"TLM:NORMAL:000000:0ms:0mV:0mA:1200:980:1100:1050:1200:1180:27C:30:31:29:30:28:32C:0mm:0:0:0:0:0\n"
+        b"TLM:NORMAL:000000:0ms:0mV:0mA:1200:980:1100:1050:1200:1180:27C:30:31:29:30:28:32C:0mm:0:0:0:0:0:0mm\n"
     );
 }
 
@@ -387,7 +387,7 @@ fn test_format_tlm_with_negative_current() {
         batt_temps: [0; 6],
         dist_mm: 0,
         enc_left: 0,
-        enc_right: 0, x_mm: 0, y_mm: 0, theta_mrad: 0,
+        enc_right: 0, x_mm: 0, y_mm: 0, theta_mrad: 0, dist_far_mm: 0,
     };
     let resp = Response::Telemetry {
         safety: SafetyState::Normal,
@@ -396,7 +396,7 @@ fn test_format_tlm_with_negative_current() {
     };
     assert_eq!(
         format_response(resp, &mut buf),
-        b"TLM:NORMAL:000000:0ms:11400mV:-3200mA:-500:0:1000:-1000:2500:-2500:-5C:0:0:0:0:0:0C:0mm:0:0:0:0:0\n"
+        b"TLM:NORMAL:000000:0ms:11400mV:-3200mA:-500:0:1000:-1000:2500:-2500:-5C:0:0:0:0:0:0C:0mm:0:0:0:0:0:0mm\n"
     );
 }
 

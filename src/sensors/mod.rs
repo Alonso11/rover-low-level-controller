@@ -11,10 +11,13 @@ pub mod acs712;
 pub mod lm335;
 /// Módulo para el módulo termistor NTC AD36958 (B=3950, 10kΩ)
 pub mod ntc_thermistor;
+/// Driver TF02 LiDAR UART largo alcance (Benewake DELiDAR TF02)
+pub mod tf02;
 
 pub use acs712::ACS712;
 pub use lm335::LM335;
 pub use ntc_thermistor::NTCThermistor;
+pub use tf02::TF02;
 
 // ── Drivers con dependencia de arduino-hal — solo con feature "avr" ──────────
 /// Módulo para encoders de posición (Efecto Hall)
