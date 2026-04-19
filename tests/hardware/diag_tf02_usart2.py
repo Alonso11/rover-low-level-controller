@@ -94,15 +94,14 @@ def main():
         print(f"  PASS — TF02 operativo via USART2")
         print(f"  Distancia promedio: {avg:.0f} mm  ({avg/10:.1f} cm)")
         sys.exit(0)
-    else:
-        print(f"  FAIL — dist_far_mm = 0 en todos los frames")
-        print(f"\n  Acciones:")
-        print(f"  1. Verificar rango: apuntar a superficie a ≥50 cm")
-        print(f"  2. Verificar pin: TF02 verde (TX) → D17 (RX2) del Mega")
-        print(f"  3. Verificar 5V en TF02 rojo con multímetro")
-        print(f"  4. Probar TF02 standalone: python3 test_tf02_sensor.py <USB-TTL>")
-        sys.exit(1)
+    print(f"  FAIL — dist_far_mm = 0 en todos los frames")
+    print(f"\n  Acciones:")
+    print(f"  1. Verificar rango: apuntar a superficie a ≥50 cm")
+    print(f"  2. Verificar pin: TF02 verde (TX) → D17 (RX2) del Mega")
+    print(f"  3. Verificar 5V en TF02 rojo con multímetro")
+    print(f"  4. Probar TF02 standalone: python3 test_tf02_sensor.py <USB-TTL>")
     print(f"{'═'*55}\n")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
