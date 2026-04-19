@@ -275,11 +275,9 @@ fn main() -> ! {
     ).with_timeout(HC_ECHO_TIMEOUT_US);
 
     // ── VL53L0X — D42(SDA/PL7), D43(SCL/PL6) vía soft I2C ──────────────────
-    // Los pines son controlados directamente por soft_i2c (registros PORTL/DDRL),
-    // no se consumen como recursos arduino-hal. init() puede fallar si el sensor
-    // no responde; el driver queda en ready=false y read_mm() no se llamará.
-    // Se loguea WARN para que el operador sepa que la detección ToF está inactiva
-    // y el sistema opera solo con HC-SR04 para emergencias de obstáculos.
+    // Módulo GY-VL53L0XV2: incluye regulador 2.8V y level-shifter integrado.
+    // VIN acepta 2.6–5.5V; I2C queda al nivel de VIN. No requiere pull-ups externos.
+    // init() puede fallar si el sensor no responde; el sistema opera solo con HC-SR04.
     let mut tof = VL53L0X::new();
     if tof.init() {
         tof.start_continuous();
@@ -443,7 +441,7 @@ fn main() -> ! {
                     iface.send_response(format_response(resp, &mut resp_buf));
                 }
             }
-            // VL53L0X: lectura no bloqueante — solo hay dato si el sensor está listo
+            // VL53L0X: lectura no bloqueante — NotReady si el sensor aún no tiene muestra.
             if tof.ready {
                 if let Ok(mm) = tof.read_mm() {
                     sensor_frame.dist_mm = mm;

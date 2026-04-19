@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 //! # Software I2C (bit-bang) — ATmega2560, D42/D43
 //!
 //! Implementación de I2C por software para evitar el conflicto del bus I2C
@@ -11,13 +11,18 @@
 //! | SCL   | D43         | PL6    | 6   |
 //!
 //! ## Modo open-drain
-//! Para simular open-drain en AVR:
+//! Para simular open-drain en AVR con pull-ups EXTERNOS a 3.3V:
 //! - Drive LOW  → DDR=1 (output), PORT=0
-//! - Release HIGH → DDR=0 (input), pull-up externo en el módulo lo lleva a HIGH
+//! - Release HIGH → DDR=0 (input), PORT=0 (pull-up interno DESACTIVADO)
+//!
+//! IMPORTANTE: el pull-up interno del Mega (~50kΩ a 5V) NO debe activarse
+//! cuando hay pull-ups externos a 3.3V. Si PORT=1 en modo input, los 50kΩ a 5V
+//! pelean con las resistencias externas y elevan el bus a ~3.5V, por encima del
+//! VCC del sensor (3.3V) → posible latch-up y fallo de comunicación.
 //!
 //! ## Frecuencia
 //! Con `delay_us(5)` a 16 MHz → semiperíodo ≈ 5 µs → ~80–100 kHz.
-//! El VL53L0X soporta hasta 400 kHz; 100 kHz es suficiente.
+//! El VL6180X soporta hasta 400 kHz; 100 kHz es suficiente.
 
 use arduino_hal::delay_us;
 
@@ -41,7 +46,10 @@ macro_rules! sda_low {
     }}
 }
 macro_rules! sda_release {
-    () => { unsafe { *DDRL &= !(1 << SDA_BIT); } } // input → pull-up externo = HIGH
+    () => { unsafe {
+        *DDRL  &= !(1 << SDA_BIT); // input (hi-Z)
+        *PORTL &= !(1 << SDA_BIT); // pull-up interno DESACTIVADO — pull-up externo a 3.3V eleva el bus
+    }}
 }
 macro_rules! scl_low {
     () => { unsafe {
@@ -50,7 +58,10 @@ macro_rules! scl_low {
     }}
 }
 macro_rules! scl_release {
-    () => { unsafe { *DDRL &= !(1 << SCL_BIT); } }
+    () => { unsafe {
+        *DDRL  &= !(1 << SCL_BIT); // input (hi-Z)
+        *PORTL &= !(1 << SCL_BIT); // pull-up interno DESACTIVADO — pull-up externo a 3.3V eleva el bus
+    }}
 }
 macro_rules! sda_read {
     () => { unsafe { (*PINL >> SDA_BIT) & 1 == 1 } }
@@ -78,13 +89,13 @@ impl SoftI2C {
         false
     }
 
-    /// Inicializa los pines en estado idle (ambas líneas liberadas = HIGH).
+    /// Inicializa los pines en estado idle (hi-Z). Requiere pull-ups externos a 3.3V.
     pub fn new() -> Self {
         unsafe {
-            // PORT=0: nunca driven HIGH activamente (open-drain puro)
-            *PORTL &= !(1 << SDA_BIT | 1 << SCL_BIT);
-            // DDR=0: input inicialmente (líneas sueltas, pull-up externo)
+            // DDR=0 (input) + PORT=0 (pull-up interno desactivado) → hi-Z
+            // Los pull-ups externos (4.7kΩ SDA, 10kΩ SCL a 3.3V) elevan el bus al nivel correcto.
             *DDRL  &= !(1 << SDA_BIT | 1 << SCL_BIT);
+            *PORTL &= !(1 << SDA_BIT | 1 << SCL_BIT);
         }
         SoftI2C
     }
@@ -165,7 +176,7 @@ impl SoftI2C {
 
     // ── API pública: transacciones completas ──────────────────────────────────
 
-    /// Escribe `data` a `reg` del dispositivo con dirección de 7 bits `addr`.
+    /// Escribe `data` a `reg` (8 bits) del dispositivo con dirección de 7 bits `addr`.
     /// Retorna `false` si se detecta NACK o clock-stretch timeout.
     pub fn write(&self, addr: u8, reg: u8, data: &[u8]) -> bool {
         self.start();
@@ -178,7 +189,7 @@ impl SoftI2C {
         true
     }
 
-    /// Lee `buf.len()` bytes desde `reg` del dispositivo `addr`.
+    /// Lee `buf.len()` bytes desde `reg` (8 bits) del dispositivo `addr`.
     /// Retorna `false` si se detecta NACK o clock-stretch timeout.
     pub fn read(&self, addr: u8, reg: u8, buf: &mut [u8]) -> bool {
         self.start();
@@ -186,6 +197,38 @@ impl SoftI2C {
         if !self.write_byte(reg)             { self.stop(); return false; }
         self.restart();
         if !self.write_byte((addr << 1) | 1) { self.stop(); return false; }
+        let last = buf.len().saturating_sub(1);
+        for (i, b) in buf.iter_mut().enumerate() {
+            match self.read_byte(i != last) {
+                Some(v) => *b = v,
+                None    => { self.stop(); return false; }
+            }
+        }
+        self.stop();
+        true
+    }
+
+    /// Escribe `data` a `reg` (16 bits, MSB primero) — para sensores como VL6180X.
+    pub fn write16(&self, addr: u8, reg: u16, data: &[u8]) -> bool {
+        self.start();
+        if !self.write_byte(addr << 1)          { self.stop(); return false; }
+        if !self.write_byte((reg >> 8) as u8)   { self.stop(); return false; }
+        if !self.write_byte((reg & 0xFF) as u8) { self.stop(); return false; }
+        for &b in data {
+            if !self.write_byte(b) { self.stop(); return false; }
+        }
+        self.stop();
+        true
+    }
+
+    /// Lee `buf.len()` bytes desde `reg` (16 bits, MSB primero) — para VL6180X.
+    pub fn read16(&self, addr: u8, reg: u16, buf: &mut [u8]) -> bool {
+        self.start();
+        if !self.write_byte(addr << 1)          { self.stop(); return false; }
+        if !self.write_byte((reg >> 8) as u8)   { self.stop(); return false; }
+        if !self.write_byte((reg & 0xFF) as u8) { self.stop(); return false; }
+        self.restart();
+        if !self.write_byte((addr << 1) | 1)    { self.stop(); return false; }
         let last = buf.len().saturating_sub(1);
         for (i, b) in buf.iter_mut().enumerate() {
             match self.read_byte(i != last) {
