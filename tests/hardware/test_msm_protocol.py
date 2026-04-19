@@ -2,12 +2,17 @@
 """
 test_msm_protocol.py — Verificación del protocolo MSM desde PC via USB
 =======================================================================
-Version: v2.3
+Version: v2.4
+
+Cambios v2.4:
+  - TLM_PATTERN actualizado a formato v2.15: añadido campo dist_far_mm (TF02 LiDAR)
+    al final del frame: ...<THETA_MRAD>:<DIST_FAR>mm
+  - Verificado 13/13 con Mega flasheado sin sensores analógicos (2026-04-18).
 
 Cambios v2.3:
-  - Actualizado TLM_PATTERN al formato v2.12 completo con campos EKF:
-      TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm:<EL>:<ER>:<X_MM>:<Y_MM>:<THETA_MRAD>
-    Añadidos: x_mm, y_mm, theta_mrad (odometría EKF).
+  - Actualizado TLM_PATTERN al formato v2.15 completo con TF02:
+      TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:...:<I5>:<T>C:<B0>:...<B5>C:<DIST>mm:<EL>:<ER>:<X_MM>:<Y_MM>:<THETA_MRAD>:<DIST_FAR>mm
+    Añadido: dist_far_mm (TF02 LiDAR largo alcance).
   - Añadido RST inicial para salir del boot FAULT (ACS712 flotantes sin motores).
   - Test 7 (EXP asimétrico) acepta ERR:ESTOP cuando no hay encoders conectados.
 
@@ -64,7 +69,8 @@ TLM_PATTERN = re.compile(
     r"(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+):(-?\d+)C:"  # 13-18: NTC celdas B0-B5 (°C)
     r"(\d+)mm:"                             # 19: distancia VL53L0X (mm)
     r"(-?\d+):(-?\d+):"                     # 20-21: enc_left, enc_right (odometría)
-    r"(-?\d+):(-?\d+):(-?\d+)$"            # 22-24: x_mm, y_mm, theta_mrad (EKF)
+    r"(-?\d+):(-?\d+):(-?\d+):"            # 22-24: x_mm, y_mm, theta_mrad (EKF)
+    r"(\d+)mm$"                            # 25: dist_far_mm TF02 LiDAR largo alcance
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
