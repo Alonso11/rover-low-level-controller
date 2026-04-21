@@ -20,6 +20,7 @@ avr = ["panic-halt", "avr-device", "arduino-hal"]
 mixed-drivers = []
 all-bts7960   = []
 all-20a       = []   # 6× ACS712-20A — trade-off único tipo de sensor
+no-oc         = []   # desactiva protección de sobrecorriente (solo pruebas HW sin ACS712)
 
 [dependencies]
 ufmt = "0.2.0"

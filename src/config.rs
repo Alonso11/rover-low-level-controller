@@ -221,12 +221,21 @@ pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N, OC_LIMIT_L298N, OC_LIMIT_BTS, OC
 #[cfg(feature = "all-20a")]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N, OC_FAULT_L298N, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS];
 
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a", feature = "no-oc")))]
 pub const OC_WARN:  [i32; 6] = [OC_WARN_L298N;  6];
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a", feature = "no-oc")))]
 pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N; 6];
-#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
+#[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a", feature = "no-oc")))]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N; 6];
+
+// Protección OC desactivada — solo para pruebas de motores sin ACS712 conectados.
+// NUNCA usar en operación normal; los motores pueden quemarse sin esta protección.
+#[cfg(feature = "no-oc")]
+pub const OC_WARN:  [i32; 6] = [i32::MAX; 6];
+#[cfg(feature = "no-oc")]
+pub const OC_LIMIT: [i32; 6] = [i32::MAX; 6];
+#[cfg(feature = "no-oc")]
+pub const OC_FAULT: [i32; 6] = [i32::MAX; 6];
 
 // ─── Protección térmica de batería ────────────────────────────────────────────
 //

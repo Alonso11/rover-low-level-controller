@@ -32,6 +32,7 @@ help:
 	@printf "  $(BOLD)Flash$(RESET)\n"
 	@echo "    make flash           ACS712-30A (default)"
 	@echo "    make flash-20a       ACS712-20A (feature all-20a)"
+	@echo "    make flash-no-oc     OC desactivado (pruebas HW sin ACS712)"
 	@echo ""
 	@printf "  $(BOLD)Tests con hardware (PORT=$(PORT))$(RESET)\n"
 	@echo "    make i2c-scan        Verifica 0x29/0x40/0x68 en bus I2C"
@@ -83,6 +84,15 @@ flash-20a:
 	  -Zjson-target-spec \
 	  -Zbuild-std=core \
 	  --features all-20a
+
+flash-no-oc:
+	@printf "$(BOLD)>> Flash LLC → $(PORT) [OC DESACTIVADO — solo pruebas HW]$(RESET)\n"
+	RAVEDUDE_PORT=$(PORT) \
+	RUSTFLAGS="-C target-cpu=atmega2560" \
+	cargo +nightly run --release \
+	  -Zjson-target-spec \
+	  -Zbuild-std=core \
+	  --features no-oc
 
 # ── Tests con hardware ────────────────────────────────────
 i2c-scan:
