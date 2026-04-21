@@ -1,4 +1,4 @@
-// Version: v2.15
+// Version: v2.16
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -404,7 +404,7 @@ fn main() -> ! {
     let mut stall_timers = [0u16; 6];
 
     iface.log(read_reset_cause());
-    iface.log("=== ROVER OLYMPUS v2.15 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY ===");
+    iface.log("=== ROVER OLYMPUS v2.16 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -433,8 +433,9 @@ fn main() -> ! {
         hc_counter = hc_counter.wrapping_add(1);
         if hc_counter >= HC_READ_PERIOD {
             hc_counter = 0;
+            let hc_thresh = if msm.state == RoverState::Climb { CLB_HC_EMERGENCY_MM } else { HC_EMERGENCY_MM };
             if let Ok(mm) = hcsr04.measure_mm() {
-                if mm < HC_EMERGENCY_MM {
+                if mm < hc_thresh {
                     let resp = msm.process(Command::Fault);
                     relay.emergency_off(); // corte hardware: obstáculo físico
                     sync_drive!(hard, rover, msm, ramp);
@@ -442,10 +443,11 @@ fn main() -> ! {
                 }
             }
             // VL53L0X: lectura no bloqueante — NotReady si el sensor aún no tiene muestra.
+            let tof_thresh = if msm.state == RoverState::Climb { CLB_TOF_EMERGENCY_MM } else { TOF_EMERGENCY_MM };
             if tof.ready {
                 if let Ok(mm) = tof.read_mm() {
                     sensor_frame.dist_mm = mm;
-                    if mm < TOF_EMERGENCY_MM {
+                    if mm < tof_thresh {
                         let resp = msm.process(Command::Fault);
                         relay.emergency_off(); // corte hardware: ToF láser
                         sync_drive!(hard, rover, msm, ramp);
@@ -503,6 +505,7 @@ fn main() -> ! {
                 msm.drive.right, msm.drive.left,   // CR, CL
                 msm.drive.right, msm.drive.left,   // RR, RL
             ];
+            let stall_thresh = if msm.state == RoverState::Climb { CLB_STALL_THRESHOLD } else { STALL_THRESHOLD };
             let mut stall_mask: u8 = 0;
             for i in 0..6usize {
                 if speeds[i].abs() > STALL_SPEED_MIN && counts[i] == last_counts[i] {
@@ -511,7 +514,7 @@ fn main() -> ! {
                     stall_timers[i] = 0;
                 }
                 last_counts[i] = counts[i];
-                if stall_timers[i] > STALL_THRESHOLD {
+                if stall_timers[i] > stall_thresh {
                     stall_mask |= 1 << i;
                 }
             }

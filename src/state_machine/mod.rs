@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 //! # Máquina de Estados Maestra (MSM) — Nodo B / Arduino Mega
 
 const WATCHDOG_MAX: u16 = 100;
@@ -32,6 +32,11 @@ pub enum Command {
     Explore { left: i16, right: i16 },
     Avoid(AvoidDir),
     Retreat,
+    /// Modo escalada: misma velocidad diferencial que EXP pero con umbrales
+    /// CLB_HC/TOF_EMERGENCY_MM y CLB_STALL_THRESHOLD. El LLC suspende la
+    /// detección normal de proximidad para evitar falsos disparos contra el
+    /// terreno inclinado. Protocolo: `CLB:L:R` → `ACK:CLB`.
+    Climb { left: i16, right: i16 },
     Fault,
     /// Safe Mode: iniciado por el HLC ante batería/temperatura crítica (SYS-FUN-040).
     /// Bloquea todos los comandos de movimiento hasta RST explícito.
@@ -54,6 +59,7 @@ pub enum RoverState {
     Explore,
     Avoid,
     Retreat,
+    Climb,
     Fault,
     Safe,
 }
@@ -135,7 +141,7 @@ impl MasterStateMachine {
 
     pub fn tick(&mut self) -> Option<Response> {
         match self.state {
-            RoverState::Explore | RoverState::Avoid | RoverState::Retreat => {}
+            RoverState::Explore | RoverState::Avoid | RoverState::Retreat | RoverState::Climb => {}
             _ => return None,
         }
         self.watchdog = self.watchdog.saturating_add(1);
@@ -180,6 +186,11 @@ impl MasterStateMachine {
                 self.state = RoverState::Retreat;
                 self.drive = DriveOutput { left: RETREAT_SPEED, right: RETREAT_SPEED };
                 Response::Ack(RoverState::Retreat)
+            }
+            Command::Climb { left, right } => {
+                self.state = RoverState::Climb;
+                self.drive = DriveOutput { left: left.clamp(-99, 99), right: right.clamp(-99, 99) };
+                Response::Ack(RoverState::Climb)
             }
             Command::Fault => {
                 self.state = RoverState::Fault;
@@ -246,6 +257,7 @@ pub fn parse_command(bytes: &[u8]) -> Option<Command> {
         b"SAFE" => Some(Command::Safe),
         b"RST"  => Some(Command::Reset),
         _ if bytes.starts_with(b"EXP:") => parse_explore(&bytes[4..]),
+        _ if bytes.starts_with(b"CLB:") => parse_climb(&bytes[4..]),
         _ if bytes.starts_with(b"AVD:") => parse_avoid(&bytes[4..]),
         _ if bytes.starts_with(b"BNK:") => parse_bank(&bytes[4..]),
         _ => None,
@@ -261,6 +273,13 @@ fn parse_bank(bytes: &[u8]) -> Option<Command> {
         _     => return None,
     };
     Some(Command::BankSelect(mode))
+}
+
+fn parse_climb(bytes: &[u8]) -> Option<Command> {
+    let colon = bytes.iter().position(|&b| b == b':')?;
+    let left  = parse_i16(&bytes[..colon])?;
+    let right = parse_i16(&bytes[colon + 1..])?;
+    Some(Command::Climb { left, right })
 }
 
 fn parse_explore(bytes: &[u8]) -> Option<Command> {
@@ -319,6 +338,7 @@ fn state_label(state: RoverState) -> &'static [u8] {
         RoverState::Explore => b"EXP",
         RoverState::Avoid   => b"AVD",
         RoverState::Retreat => b"RET",
+        RoverState::Climb   => b"CLB",
         RoverState::Fault   => b"FLT",
         RoverState::Safe    => b"SFE",
     }

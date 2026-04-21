@@ -1,4 +1,4 @@
-// Version: v1.3
+// Version: v1.4
 //! # Configuración del firmware — parámetros ajustables en tiempo de compilación
 //!
 //! Centraliza todas las constantes que afectan el comportamiento del rover.
@@ -104,6 +104,25 @@ pub const HC_ECHO_TIMEOUT_US: u32 = 1_750;
 /// A 150 mm de emergencia: v_max = 150 mm / 120 ms = 1.25 m/s — suficiente
 /// para el rango de operación estimado (≤ 0.4 m/s).
 pub const TOF_EMERGENCY_MM: u16 = 150;
+
+// ─── Modo escalada (CLB) ──────────────────────────────────────────────────────
+//
+// Durante la escalada el terreno inclinado queda a ~80–120 mm del sensor frontal,
+// por lo que los umbrales normales (HC=200 mm, TOF=150 mm) dispararían FAULT
+// ante el suelo, no ante un obstáculo real. Los umbrales CLB son lo suficientemente
+// bajos para ignorar el terreno pero detener ante una pared frontal.
+//
+// El umbral de stall se extiende a 3× porque los motores contra una inclinación
+// toleran pausas más largas antes de confirmar un bloqueo real.
+
+/// Distancia HC-SR04 en mm para FAULT en modo CLB.
+pub const CLB_HC_EMERGENCY_MM: u16 = 60;
+
+/// Distancia VL53L0X en mm para FAULT en modo CLB.
+pub const CLB_TOF_EMERGENCY_MM: u16 = 50;
+
+/// Ciclos sin pulso de encoder para declarar stall en modo CLB (~3 s).
+pub const CLB_STALL_THRESHOLD: u16 = 150;
 
 // ─── Detección de stall ──────────────────────────────────────────────────────
 
