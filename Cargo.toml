@@ -21,6 +21,9 @@ mixed-drivers = []
 all-bts7960   = []
 all-20a       = []   # 6× ACS712-20A — trade-off único tipo de sensor
 no-oc         = []   # desactiva protección de sobrecorriente (solo pruebas HW sin ACS712)
+no-stall      = []   # desactiva detección de stall por encoder (solo pruebas HW sin encoders)
+no-lm335      = []   # desactiva lectura LM335 (solo pruebas HW sin sensor de temperatura)
+no-hcsr04     = []   # desactiva fault por proximidad HC-SR04 (solo pruebas HW sin sensor)
 
 [dependencies]
 ufmt = "0.2.0"

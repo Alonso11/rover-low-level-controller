@@ -433,13 +433,16 @@ fn main() -> ! {
         hc_counter = hc_counter.wrapping_add(1);
         if hc_counter >= HC_READ_PERIOD {
             hc_counter = 0;
-            let hc_thresh = if msm.state == RoverState::Climb { CLB_HC_EMERGENCY_MM } else { HC_EMERGENCY_MM };
-            if let Ok(mm) = hcsr04.measure_mm() {
-                if mm < hc_thresh {
-                    let resp = msm.process(Command::Fault);
-                    relay.emergency_off(); // corte hardware: obstáculo físico
-                    sync_drive!(hard, rover, msm, ramp);
-                    iface.send_response(format_response(resp, &mut resp_buf));
+            #[cfg(not(feature = "no-hcsr04"))]
+            {
+                let hc_thresh = if msm.state == RoverState::Climb { CLB_HC_EMERGENCY_MM } else { HC_EMERGENCY_MM };
+                if let Ok(mm) = hcsr04.measure_mm() {
+                    if mm < hc_thresh {
+                        let resp = msm.process(Command::Fault);
+                        relay.emergency_off(); // corte hardware: obstáculo físico
+                        sync_drive!(hard, rover, msm, ramp);
+                        iface.send_response(format_response(resp, &mut resp_buf));
+                    }
                 }
             }
             // VL53L0X: lectura no bloqueante — NotReady si el sensor aún no tiene muestra.
@@ -623,26 +626,25 @@ fn main() -> ! {
                 if level > worst { worst = level; }
             }
 
-            let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
-            let t_amb = lm335.read_celsius(raw_t);
-            match check_temp_c(t_amb, AMBIENT_TEMP_MIN_C, AMBIENT_TEMP_MAX_C) {
-                Some(t_valid) => {
-                    sensor_frame.temp_c = t_valid;
-                    // Protección térmica LLC-level (EPS-REQ-003): si la temperatura
-                    // ambiente supera AMBIENT_SAFE_C (60 °C), entrar en Safe Mode
-                    // directamente sin esperar al HLC. Cubre el escenario de pérdida
-                    // de enlace TLM con el rover en un entorno de alta temperatura.
-                    if t_valid >= AMBIENT_SAFE_C
-                        && msm.state != RoverState::Safe
-                        && msm.state != RoverState::Fault
-                    {
-                        msm.process(Command::Safe);
-                        relay.emergency_off();
-                        sync_drive!(hard, rover, msm, ramp);
-                        iface.log("ALARM:AMBIENT_OVERHEAT_SAFE_MODE");
+            #[cfg(not(feature = "no-lm335"))]
+            {
+                let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
+                let t_amb = lm335.read_celsius(raw_t);
+                match check_temp_c(t_amb, AMBIENT_TEMP_MIN_C, AMBIENT_TEMP_MAX_C) {
+                    Some(t_valid) => {
+                        sensor_frame.temp_c = t_valid;
+                        if t_valid >= AMBIENT_SAFE_C
+                            && msm.state != RoverState::Safe
+                            && msm.state != RoverState::Fault
+                        {
+                            msm.process(Command::Safe);
+                            relay.emergency_off();
+                            sync_drive!(hard, rover, msm, ramp);
+                            iface.log("ALARM:AMBIENT_OVERHEAT_SAFE_MODE");
+                        }
                     }
+                    None => iface.log("WARN:LM335_OOR"),
                 }
-                None => iface.log("WARN:LM335_OOR"),
             }
 
             // INA226 — tensión y corriente total de batería

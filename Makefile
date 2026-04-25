@@ -12,7 +12,7 @@ FAIL  := \033[31m✗\033[0m
 
 .PHONY: help setup test-unit test-rust test-hlc \
         flash flash-20a \
-        test-sensors test-protocol test-motors calibrate i2c-scan \
+        test-sensors test-protocol test-motors test-motors-main calibrate i2c-scan \
         capture-tlm \
         int-all clean
 
@@ -33,12 +33,14 @@ help:
 	@echo "    make flash           ACS712-30A (default)"
 	@echo "    make flash-20a       ACS712-20A (feature all-20a)"
 	@echo "    make flash-no-oc     OC desactivado (pruebas HW sin ACS712)"
+	@echo "    make flash-motors-only Sin OC ni stall (solo motores, sin encoders)"
 	@echo ""
 	@printf "  $(BOLD)Tests con hardware (PORT=$(PORT))$(RESET)\n"
 	@echo "    make i2c-scan        Verifica 0x29/0x40/0x68 en bus I2C"
 	@echo "    make test-sensors    INT-04b: 8 sensores en rango TLM"
 	@echo "    make test-protocol   INT-05: 13 tests protocolo UART"
-	@echo "    make test-motors     INT-07: motores interactivo"
+	@echo "    make test-motors     INT-07: motores (ejemplo debug_motors_l298n)"
+	@echo "    make test-motors-main INT-07: motores firmware principal (EXP mode)"
 	@echo "    make calibrate       INT-08: odometría + sensores"
 	@echo "    make int-all         INT-04b + INT-05 secuencial"
 	@echo ""
@@ -94,6 +96,15 @@ flash-no-oc:
 	  -Zbuild-std=core \
 	  --features no-oc
 
+flash-motors-only:
+	@printf "$(BOLD)>> Flash LLC → $(PORT) [sin OC, stall ni LM335 — solo motores]$(RESET)\n"
+	RAVEDUDE_PORT=$(PORT) \
+	RUSTFLAGS="-C target-cpu=atmega2560" \
+	cargo +nightly run --release \
+	  -Zjson-target-spec \
+	  -Zbuild-std=core \
+	  --features no-oc,no-stall,no-lm335,no-hcsr04
+
 # ── Tests con hardware ────────────────────────────────────
 i2c-scan:
 	@printf "$(BOLD)>> I2C scan → $(PORT)$(RESET)\n"
@@ -110,6 +121,10 @@ test-protocol:
 test-motors:
 	@printf "$(BOLD)>> INT-07: motores interactivo → $(PORT)$(RESET)\n"
 	uv run python tests/hardware/test_motors_debug.py $(PORT)
+
+test-motors-main:
+	@printf "$(BOLD)>> INT-07: motores firmware principal → $(PORT) [no-oc]$(RESET)\n"
+	uv run python tests/hardware/test_motors_main.py $(PORT)
 
 calibrate:
 	@printf "$(BOLD)>> INT-08: calibración → $(PORT)$(RESET)\n"

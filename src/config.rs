@@ -131,7 +131,11 @@ pub const STALL_THRESHOLD: u16 = 50;
 
 /// Velocidad mínima absoluta (%) para activar la detección de stall.
 /// Por debajo se asume que el motor está intencionalmente parado.
+/// Con feature `no-stall` se pone en 100 (imposible de alcanzar) para deshabilitar.
+#[cfg(not(feature = "no-stall"))]
 pub const STALL_SPEED_MIN: i16 = 20;
+#[cfg(feature = "no-stall")]
+pub const STALL_SPEED_MIN: i16 = 100;
 
 // ─── Muestreo ADC ────────────────────────────────────────────────────────────
 
