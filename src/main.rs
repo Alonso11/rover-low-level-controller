@@ -442,6 +442,8 @@ fn main() -> ! {
     let mut stall_timers = [0u16; 6];
     // Ciclos consecutivos sin frame TF02 válido. Satura en 500 (~10 s); emite WARN una vez.
     let mut tf02_no_data: u16 = 0;
+    // Loguea SIG del primer frame válido para diagnosticar qué envía el sensor real.
+    let mut tf02_sig_logged: bool = false;
 
     iface.log(read_reset_cause());
     iface.log("=== ROVER OLYMPUS v2.17 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB ===");
@@ -512,6 +514,15 @@ fn main() -> ! {
                 if tf02.feed(byte) {
                     sensor_frame.dist_far_mm = tf02.last_dist_mm;
                     tf02_frame_this_cycle = true;
+                    if !tf02_sig_logged {
+                        tf02_sig_logged = true;
+                        let mut sig_buf = [0u8; 16];
+                        let mut si = 0;
+                        for &b in b"INFO:TF02_SIG:" { sig_buf[si] = b; si += 1; }
+                        write_u32(tf02.last_sig as u32, &mut sig_buf, &mut si);
+                        sig_buf[si] = b'\n'; si += 1;
+                        iface.send_response(&sig_buf[..si]);
+                    }
                 }
             }
         }

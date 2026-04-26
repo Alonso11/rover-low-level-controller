@@ -621,21 +621,14 @@ fn test_tf02_checksum_incorrecto_rechazado() {
 }
 
 #[test]
-fn test_tf02_sig_no_fiable_rechazado() {
-    // SIG 1-6 no son fiables según datasheet §8.2
-    for sig in [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06] {
+fn test_tf02_sig_any_value_accepted() {
+    // SIG filter disabled for hardware diagnosis: all values accepted.
+    // Check last_sig reflects the value sent by the real sensor.
+    for sig in [0x00u8, 0x01, 0x02, 0x06, 0x07, 0x08, 0xFF] {
         let frame = build_frame(100, 800, sig);
         let mut tf02 = TF02::new();
-        assert!(!feed_frame(&mut tf02, &frame), "sig=0x{:02X} debería rechazarse", sig);
-    }
-}
-
-#[test]
-fn test_tf02_sig_fiable_aceptado() {
-    for sig in [7u8, 8] {
-        let frame = build_frame(100, 800, sig);
-        let mut tf02 = TF02::new();
-        assert!(feed_frame(&mut tf02, &frame), "sig={} debería aceptarse", sig);
+        assert!(feed_frame(&mut tf02, &frame), "sig=0x{:02X} should be accepted", sig);
+        assert_eq!(tf02.last_sig, sig);
     }
 }
 

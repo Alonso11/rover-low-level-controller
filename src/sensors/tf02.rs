@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 //! # Driver TF02 — LiDAR Benewake DELiDAR TF02 (largo alcance)
 //!
 //! Sensor ToF UART que transmite frames de 9 bytes a 100 Hz de forma continua.
@@ -47,19 +47,25 @@
 /// Driver de parseo de frames TF02. No depende del HAL; procesa bytes uno a uno.
 ///
 /// Uso típico: llamar [`TF02::feed`] con cada byte recibido de USART2.
-/// Cuando retorna `true`, [`TF02::last_dist_mm`] contiene una lectura fiable.
+/// Cuando retorna `true`, [`TF02::last_dist_mm`] contiene una lectura válida.
+///
+/// El filtro SIG está deshabilitado: se aceptan todos los valores (0–255) para
+/// permitir diagnóstico en hardware. Consultar `last_sig` para conocer el valor
+/// que emite el sensor real y ajustar si es necesario.
 pub struct TF02 {
     buf: [u8; 9],
     idx: u8,
-    /// Última distancia fiable en mm (0 si todavía no hay lectura válida).
+    /// Última distancia en mm (0 si todavía no hay lectura válida).
     pub last_dist_mm: u16,
-    /// Intensidad de señal del último frame fiable (0–65535).
+    /// Intensidad de señal del último frame (0–65535).
     pub last_strength: u16,
+    /// Valor SIG del último frame recibido. Útil para diagnosticar qué envía el sensor real.
+    pub last_sig: u8,
 }
 
 impl TF02 {
     pub const fn new() -> Self {
-        Self { buf: [0u8; 9], idx: 0, last_dist_mm: 0, last_strength: 0 }
+        Self { buf: [0u8; 9], idx: 0, last_dist_mm: 0, last_strength: 0, last_sig: 0 }
     }
 
     /// Alimenta un byte del stream UART.
@@ -98,15 +104,13 @@ impl TF02 {
                     .wrapping_add(self.buf[6])
                     .wrapping_add(self.buf[7]);
                 if byte != check { return false; }
-                // SIG: solo 7 u 8 indican dato fiable (datasheet §8.2)
-                let sig = self.buf[6];
-                if sig != 7 && sig != 8 { return false; }
                 // Distancia en cm (little-endian)
                 let dist_cm = (self.buf[3] as u16) << 8 | self.buf[2] as u16;
                 // dist_cm == 2200 → out-of-range flag del sensor
                 if dist_cm >= 2200 { return false; }
-                self.last_dist_mm   = dist_cm * 10;
-                self.last_strength  = (self.buf[5] as u16) << 8 | self.buf[4] as u16;
+                self.last_dist_mm  = dist_cm * 10;
+                self.last_strength = (self.buf[5] as u16) << 8 | self.buf[4] as u16;
+                self.last_sig      = self.buf[6];
                 return true;
             }
             _ => { self.idx = 0; }
