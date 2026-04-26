@@ -27,37 +27,42 @@ pub const GYRO_SCALE:  f32 = (3.14159265 / 180.0) / 131.0;
 pub struct MPU6050 {
     i2c: SoftI2C,
     pub ready: bool,
+    addr: u8,
 }
 
 impl MPU6050 {
     pub fn new() -> Self {
-        MPU6050 { i2c: SoftI2C::new(), ready: false }
+        MPU6050 { i2c: SoftI2C::new(), ready: false, addr: ADDR }
     }
 
-    pub fn init(&mut self) -> bool {
-        let mut who_am_i = [0u8; 1];
-        if !self.i2c.read(ADDR, REG_WHO_AM_I, &mut who_am_i) || who_am_i[0] != 0x68 {
-            return false;
+    /// Inicializa el sensor. Prueba 0x68 y 0x69 (AD0 alto).
+    /// Retorna el byte WHO_AM_I leído (0 si falla). Acepta cualquier
+    /// valor != 0 para soportar clones que devuelven 0x70/0x72/etc.
+    pub fn init(&mut self) -> u8 {
+        for &candidate in &[0x68u8, 0x69u8] {
+            let mut who_am_i = [0u8; 1];
+            if self.i2c.read(candidate, REG_WHO_AM_I, &mut who_am_i) && who_am_i[0] != 0 {
+                self.addr = candidate;
+                // 1. Wake up (PWR_MGMT_1 = 0)
+                self.i2c.write(self.addr, REG_PWR_MGMT_1, &[0x00]);
+                // 2. Set gyro scale ±250 deg/s (GYRO_CONFIG = 0)
+                self.i2c.write(self.addr, REG_GYRO_CONFIG, &[0x00]);
+                // 3. Set accel scale ±2g (ACCEL_CONFIG = 0)
+                self.i2c.write(self.addr, REG_ACCEL_CONFIG, &[0x00]);
+                // 4. Set DLPF ~44Hz (CONFIG = 0x03)
+                self.i2c.write(self.addr, REG_CONFIG, &[0x03]);
+                self.ready = true;
+                return who_am_i[0];
+            }
         }
-
-        // 1. Wake up (PWR_MGMT_1 = 0)
-        self.i2c.write(ADDR, REG_PWR_MGMT_1, &[0x00]);
-        // 2. Set gyro scale ±250 deg/s (GYRO_CONFIG = 0)
-        self.i2c.write(ADDR, REG_GYRO_CONFIG, &[0x00]);
-        // 3. Set accel scale ±2g (ACCEL_CONFIG = 0)
-        self.i2c.write(ADDR, REG_ACCEL_CONFIG, &[0x00]);
-        // 4. Set DLPF (Digital Low Pass Filter) to ~44Hz (CONFIG = 0x03)
-        self.i2c.write(ADDR, REG_CONFIG, &[0x03]);
-
-        self.ready = true;
-        true
+        0
     }
 
     /// Ax, Ay, Az, Temp, Gx, Gy, Gz (cada uno 16-bit big-endian).
     pub fn read_raw(&self) -> Option<(i16, i16, i16, i16, i16, i16, i16)> {
         if !self.ready { return None; }
         let mut buf = [0u8; 14];
-        if !self.i2c.read(ADDR, REG_ACCEL_XOUT_H, &mut buf) {
+        if !self.i2c.read(self.addr, REG_ACCEL_XOUT_H, &mut buf) {
             return None;
         }
 

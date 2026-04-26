@@ -297,25 +297,63 @@ fn main() -> ! {
     } else {
         iface.log("WARN:INA226_FAIL");
     }
+    // I2C bus scan — diagnóstico (eliminar después de validar hardware)
+    {
+        use rover_low_level_controller::sensors::soft_i2c::SoftI2C;
+        let scanner = SoftI2C::new();
+        let found = scanner.scan();
+        let mut any = false;
+        for addr in 0x08u8..0x78 {
+            if found[(addr / 8) as usize] & (1 << (addr % 8)) != 0 {
+                let mut msg = [0u8; 16];
+                let mut i = 0;
+                for &b in b"I2C:0x" { msg[i] = b; i += 1; }
+                let hi = addr >> 4; let lo = addr & 0xF;
+                msg[i] = if hi < 10 { b'0'+hi } else { b'a'+hi-10 }; i += 1;
+                msg[i] = if lo < 10 { b'0'+lo } else { b'a'+lo-10 }; i += 1;
+                iface.log(core::str::from_utf8(&msg[..i]).unwrap_or("I2C:?"));
+                any = true;
+            }
+        }
+        if !any { iface.log("I2C:NONE"); }
+    }
     let mut mpu = MPU6050::new();
     let mut gyro_bias_z: f32 = 0.0;
     let mut accel_bias_x: f32 = 0.0;
     let mut accel_bias_z: f32 = 9.80665;
-    if mpu.init() { iface.log("INFO:MPU6050_OK"); } else { iface.log("WARN:MPU6050_FAIL"); }
-        iface.log("INFO:Calibrating_IMU...");
-        let mut sum_gz = 0.0; let mut sum_ax = 0.0; let mut sum_az = 0.0;
-        for _ in 0..50 {
-            if let Some(r) = mpu.read_raw() {
-                sum_gz += r.6 as f32 * GYRO_SCALE;
-                sum_ax += r.0 as f32 * ACCEL_SCALE;
-                sum_az += r.2 as f32 * ACCEL_SCALE;
-            }
-            arduino_hal::delay_ms(10);
+    {
+        let who = mpu.init();
+        if who != 0 {
+            // Logea dirección e ID para diagnóstico (ej. INFO:MPU6050_OK:0x68:id=0x68)
+            let mut msg = [0u8; 32];
+            let mut i = 0;
+            for &b in b"INFO:MPU6050_OK:addr=" { msg[i] = b; i += 1; }
+            let hi = who >> 4; let lo = who & 0xF;
+            msg[i] = b'0'; i += 1; msg[i] = b'x'; i += 1;
+            msg[i] = if hi < 10 { b'0'+hi } else { b'a'+hi-10 }; i += 1;
+            msg[i] = if lo < 10 { b'0'+lo } else { b'a'+lo-10 }; i += 1;
+            msg[i] = b'\0'; i += 1;
+            iface.log(core::str::from_utf8(&msg[..i-1]).unwrap_or("INFO:MPU6050_OK"));
+        } else {
+            iface.log("WARN:MPU6050_FAIL");
         }
-        gyro_bias_z = sum_gz / 50.0;
-        accel_bias_x = sum_ax / 50.0;
-        accel_bias_z = sum_az / 50.0;
-        iface.log("INFO:IMU_Calibrated");
+        if who != 0 {
+            iface.log("INFO:Calibrating_IMU...");
+            let mut sum_gz = 0.0; let mut sum_ax = 0.0; let mut sum_az = 0.0;
+            for _ in 0..50 {
+                if let Some(r) = mpu.read_raw() {
+                    sum_gz += r.6 as f32 * GYRO_SCALE;
+                    sum_ax += r.0 as f32 * ACCEL_SCALE;
+                    sum_az += r.2 as f32 * ACCEL_SCALE;
+                }
+                arduino_hal::delay_ms(10);
+            }
+            gyro_bias_z = sum_gz / 50.0;
+            accel_bias_x = sum_ax / 50.0;
+            accel_bias_z = sum_az / 50.0;
+            iface.log("INFO:IMU_Calibrated");
+        }
+    }
 
     // ── USART2: TF02 LiDAR — D17(RX2) @ 115200 baud ─────────────────────────
     // TF02 transmite frames de 9 bytes a 100 Hz sin necesitar init ni comandos.

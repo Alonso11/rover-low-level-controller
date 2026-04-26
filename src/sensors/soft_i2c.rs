@@ -239,4 +239,20 @@ impl SoftI2C {
         self.stop();
         true
     }
+
+    /// Escanea todas las direcciones I2C (0x08–0x77) y retorna un bitmask
+    /// de 128 bits (16 bytes) donde el bit N está activo si addr N responde ACK.
+    /// Solo para diagnóstico de hardware.
+    pub fn scan(&self) -> [u8; 16] {
+        let mut found = [0u8; 16];
+        for addr in 0x08u8..0x78 {
+            self.start();
+            let ack = self.write_byte(addr << 1);
+            self.stop();
+            if ack {
+                found[(addr / 8) as usize] |= 1 << (addr % 8);
+            }
+        }
+        found
+    }
 }
