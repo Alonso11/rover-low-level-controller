@@ -21,9 +21,8 @@ use rover_low_level_controller::command_interface::CommandInterface;
 use rover_low_level_controller::motor_control::l298n::L298NMotor;
 use rover_low_level_controller::motor_control::Motor;
 
-/// *** CAMBIA ESTE NÚMERO PARA PROBAR ***
-/// 0 = todos los motores, 1-6 = motor individual
-const MOTOR_TO_TEST: u8 = 0;
+/// *** CAMBIA ESTE NÚMERO (1-6) PARA PROBAR CADA MOTOR ***
+const MOTOR_TO_TEST: u8 = 2;
 
 /// *** VELOCIDAD DE PRUEBA (0-100) ***
 const SPEED: i16 = 50;
@@ -58,23 +57,23 @@ fn main() -> ! {
 
     // M3: Central Derecho — D5/OC3A/Timer3
     let mut m3 = L298NMotor::new(
-        pins.d8.into_output().into_pwm(&mut timer4),
+        pins.d5.into_output().into_pwm(&mut timer3),
         pins.d28.into_output(),
-        pins.d30.into_output(),
+        pins.d29.into_output(),
         false,
     );
 
     // M4: Central Izquierdo — D6/OC4A/Timer4
     let mut m4 = L298NMotor::new(
-        pins.d7.into_output().into_pwm(&mut timer4),
-        pins.d29.into_output(),
+        pins.d6.into_output().into_pwm(&mut timer4),
+        pins.d30.into_output(),
         pins.d31.into_output(),
         false,
     );
 
     // M5: Trasero Derecho — D7/OC4B/Timer4
     let mut m5 = L298NMotor::new(
-        pins.d6.into_output().into_pwm(&mut timer4),
+        pins.d7.into_output().into_pwm(&mut timer4),
         pins.d34.into_output(),
         pins.d35.into_output(),
         false,
@@ -82,21 +81,20 @@ fn main() -> ! {
 
     // M6: Trasero Izquierdo — D8/OC4C/Timer4
     let mut m6 = L298NMotor::new(
-        pins.d5.into_output().into_pwm(&mut timer3),
+        pins.d8.into_output().into_pwm(&mut timer4),
         pins.d36.into_output(),
         pins.d37.into_output(),
         false,
     );
 
     match MOTOR_TO_TEST {
-        0 => interface.log("TEST TODOS los motores"),
         1 => interface.log("TEST M1: D9/OC2B/Timer2 (Frontal Der)"),
         2 => interface.log("TEST M2: D10/OC2A/Timer2 (Frontal Izq)"),
         3 => interface.log("TEST M3: D5/OC3A/Timer3 (Central Der)"),
         4 => interface.log("TEST M4: D6/OC4A/Timer4 (Central Izq)"),
         5 => interface.log("TEST M5: D7/OC4B/Timer4 (Trasero Der)"),
         6 => interface.log("TEST M6: D8/OC4C/Timer4 (Trasero Izq)"),
-        _ => interface.log("ERR: MOTOR_TO_TEST invalido (0-6)"),
+        _ => interface.log("ERR: MOTOR_TO_TEST invalido (1-6)"),
     }
     interface.log("Comandos: F=adelante B=atras S=stop");
 
@@ -106,22 +104,13 @@ fn main() -> ! {
             if cmd.is_empty() { continue; }
 
             let speed: i16 = match cmd[0] {
-                b'F' | b'f' => SPEED,
-                b'B' | b'b' => -SPEED,
+                b'F' | b'f' => 80,
+                b'B' | b'b' => -80,
                 b'S' | b's' => 0,
                 _ => { interface.log("ERR: usa F B S"); continue; }
             };
 
             match MOTOR_TO_TEST {
-                0 => {
-                    m1.set_speed(speed);
-                    m2.set_speed(speed);
-                    m3.set_speed(speed);
-                    m4.set_speed(speed);
-                    m5.set_speed(speed);
-                    m6.set_speed(speed);
-                    interface.log("TODOS OK");
-                }
                 1 => { m1.set_speed(speed); interface.log("M1 OK"); }
                 2 => { m2.set_speed(speed); interface.log("M2 OK"); }
                 3 => { m3.set_speed(speed); interface.log("M3 OK"); }

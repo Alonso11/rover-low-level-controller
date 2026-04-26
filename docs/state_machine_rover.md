@@ -1,11 +1,17 @@
-<!-- Version: v1.1 -->
+<!-- Version: v1.2 -->
 # Protection Logic and Safety State Machine (Design Specification)
 
-> **Status: Design specification — not yet implemented in firmware.**
+> **Status: Design specification — modelo virtual I²t NO implementado.**
 >
-> The stall detection currently implemented in `src/controller/mod.rs` uses
-> a simpler encoder-count based algorithm (see Section 4). The full I²t
-> thermal model described in Sections 1–3 is planned for a future iteration.
+> Este documento describe la arquitectura objetivo con sensores virtuales
+> (modelo back-EMF). **El firmware actual (v2.7) usa sensores físicos reales:**
+> - Corriente: 6× ACS712-30A (A0–A5) con protección graduada Warn/Limit/Fault
+> - Stall: 6× encoders Hall (INT0–INT5), umbral 50 ciclos a 20 ms
+> - Temperatura: LM335 (A6) + 6× NTC (A7–A12)
+>
+> La sección de stall (Section 4) sigue siendo relevante como referencia de diseño.
+> El modelo I²t (Sections 1–3) queda como especificación para iteración futura.
+> Ver `docs/consideration_implementation.md` §3, §6 y §8 para la implementación real.
 
 This document describes the target safety architecture for protecting the
 L298N drivers and DC motors using virtual sensors (mathematical models +

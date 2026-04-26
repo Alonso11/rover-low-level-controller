@@ -1,33 +1,866 @@
-// Version: v1.0
+// Version: v2.17
+//! # Firmware Principal — Rover Olympus / Arduino Mega 2560
+//!
+//! ## Loop principal (20 ms / ciclo):
+//!   1. `msm.tick()`            — watchdog: sin PING en 100 ciclos (~2 s) → FAULT
+//!   2. HC-SR04 + VL53L0X (cada 5 ciclos) — emergencia < 20/15 cm → FAULT
+//!   3. Stall detection         — encoders via ISR → msm.update_safety(mask)
+//!   4. `iface.poll_command()`  — trama ASCII desde USART0 (USB/RPi5)
+//!   5. `msm.process(cmd)`      — transición de estado + calcula DriveOutput
+//!   6. `sync_drive!()`         — aplica DriveOutput a los 6 motores
+//!   7. `iface.send_response()` — respuesta ASCII
+//!   8. Sensores analógicos (cada 25 ciclos ~500 ms) — corriente + temperatura
+//!   9. Telemetría (~1 s)       — TLM:<SAFETY>:<MASK>
+//!
+//! ## Asignación de pines:
+//!   - USART0 (USB) @ 115200 → RPi5 / PC
+//!   - Timer2 D9(FR) D10(FL) | Timer3 D5(CR) | Timer4 D6(CL) D7(RR) D8(RL)
+//!   - Dirección motores: D22–D37
+//!   - HC-SR04: D38(Trigger) D39(Echo)
+//!   - VL53L0X: D42(SDA/PL7) D43(SCL/PL6) - soft I2C, avoids TWI conflict
+//!   - Encoders: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
+//!               D2(INT4/RR) D3(INT5/RL)
+//!   - ACS712-30A: A0(FR) A1(FL) A2(CR) A3(CL) A4(RR) A5(RL)
+//!   - LM335:      A6
+//!
+//! ## Diseño de encoders:
+//!   Los 6 HallEncoders son `static` para ser accesibles desde las ISRs.
+//!   Cada ISR llama `pulse()` en rising edge. El loop principal lee los
+//!   contadores y detecta stall si no cambian durante STALL_THRESHOLD ciclos
+//!   mientras la velocidad supera STALL_SPEED_MIN.
+//!   Ver consideration_implementation.md §6 para la decisión de diseño.
+
 #![no_std]
 #![no_main]
+#![feature(abi_avr_interrupt)]
 
 use panic_halt as _;
-// Usamos la librería del proyecto
-use rover_low_level_controller::motor_control::Servo;
-use rover_low_level_controller::motor_control::servo::StandardServo;
+use arduino_hal::simple_pwm::{IntoPwmPin, Prescaler, Timer2Pwm, Timer3Pwm, Timer4Pwm};
+use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuffer};
+use rover_low_level_controller::motor_control::l298n::L298NMotor;
+use rover_low_level_controller::motor_control::SixWheelRover;
+use rover_low_level_controller::config::*;
+use rover_low_level_controller::sensors::hc_sr04::HCSR04;
+use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, TF02, check_temp_c};
+use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
+use rover_low_level_controller::ramp::DriveRamp;
+use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
+use rover_low_level_controller::relay::RelayModule;
+use arduino_hal::prelude::*;
+use rover_low_level_controller::state_machine::{
+    format_response, parse_command, BankMode, Command, MasterStateMachine, Response, RoverState,
+    SafetyState, SensorFrame,
+};
+
+// ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
+//
+// Orden del stall_mask (bit N = motor N):
+//   bit 0 = Front Right  (INT0 / D21)
+//   bit 1 = Front Left   (INT1 / D20)
+//   bit 2 = Center Right (INT2 / D19) ← libre gracias a USART3 para RPi
+//   bit 3 = Center Left  (INT3 / D18) ← libre gracias a USART3 para RPi
+//   bit 4 = Rear Right   (INT4 / D2)
+//   bit 5 = Rear Left    (INT5 / D3)
+
+static ENCODER_FR: HallEncoder = HallEncoder::new(); // Front Right  — INT0, D21
+static ENCODER_FL: HallEncoder = HallEncoder::new(); // Front Left   — INT1, D20
+static ENCODER_CR: HallEncoder = HallEncoder::new(); // Center Right — INT2, D19
+static ENCODER_CL: HallEncoder = HallEncoder::new(); // Center Left  — INT3, D18
+static ENCODER_RR: HallEncoder = HallEncoder::new(); // Rear Right   — INT4, D2
+static ENCODER_RL: HallEncoder = HallEncoder::new(); // Rear Left    — INT5, D3
+
+// ─── ISRs — rising edge en Fase A de cada encoder ────────────────────────────
+
+#[avr_device::interrupt(atmega2560)]
+fn INT0() { ENCODER_FR.pulse(); }
+
+#[avr_device::interrupt(atmega2560)]
+fn INT1() { ENCODER_FL.pulse(); }
+
+#[avr_device::interrupt(atmega2560)]
+fn INT2() { ENCODER_CR.pulse(); }
+
+#[avr_device::interrupt(atmega2560)]
+fn INT3() { ENCODER_CL.pulse(); }
+
+#[avr_device::interrupt(atmega2560)]
+fn INT4() { ENCODER_RR.pulse(); }
+
+#[avr_device::interrupt(atmega2560)]
+fn INT5() { ENCODER_RL.pulse(); }
+
+// ─── Ring buffer USART RX (interrupt-driven) ─────────────────────────────────
+//
+// El FIFO hardware USART del ATmega2560 tiene solo 3 bytes. Con delay_ms(20)
+// en el loop, un comando de 5+ bytes llega completo en ~434 µs y los últimos
+// bytes se pierden por overflow (DOR). Ver docs/debug_usart_overflow.md.
+//
+// Solución: la ISR USART_RX copia cada byte recibido en este ring buffer de
+// 64 bytes. poll_from_ring() lo drena en cada iteración del loop sin importar
+// si el CPU estuvo bloqueado los últimos 20 ms.
+//
+// MODO TEST (actual): USART0 (USB) — ISR: USART0_RX, registro: UDR0
+// MODO PRODUCCIÓN:    USART3 (RPi) — cambiar ISR a USART3_RX y leer UDR3
+
+static RX_BUF:     RxRingBuffer = RxRingBuffer::new();
+static TF02_RX_BUF: RxRingBuffer = RxRingBuffer::new();
+
+// ─── EKF estático (sin heap) ───────────────────────────────────────────────────
+static mut EKF: EkfState = EkfState::new(0.01, 0.09);
+
+/// ISR USART0 RX Complete — copia byte recibido al ring buffer.
+/// En producción (USART3) renombrar a USART3_RX y leer UDR3.
+#[avr_device::interrupt(atmega2560)]
+fn USART0_RX() {
+    let byte = unsafe {
+        (*avr_device::atmega2560::USART0::ptr()).udr0().read().bits()
+    };
+    unsafe { RX_BUF.push(byte); }
+}
+
+/// ISR USART2 RX Complete — almacena cada byte del TF02 antes de que el FIFO se llene.
+/// El TF02 envía 9 bytes en ~781 µs (115200 baud); sin ISR los bytes 3-9 se pierden.
+#[avr_device::interrupt(atmega2560)]
+fn USART2_RX() {
+    let byte = unsafe {
+        (*avr_device::atmega2560::USART2::ptr()).udr2().read().bits()
+    };
+    unsafe { TF02_RX_BUF.push(byte); }
+}
+
+// ─── Macro auxiliar ──────────────────────────────────────────────────────────
+
+/// Promedia N lecturas de un pin analógico para reducir ruido ADC.
+/// El ATmega2560 tiene un solo ADC multiplexado; cada lectura es ~104 µs.
+macro_rules! adc_avg {
+    ($pin:expr, $adc:expr, $n:expr) => {{
+        let mut sum = 0u32;
+        for _ in 0..$n {
+            sum += $pin.analog_read(&mut $adc) as u32;
+        }
+        (sum / $n as u32) as u16
+    }};
+}
+
+/// Aplica msm.drive al rover con dos modos de parada.
+///
+/// ## Modos
+///
+/// `hard` — Stop inmediato: resetea la rampa y llama a `rover.stop()`.
+///   Usar en: obstáculo HC-SR04/VL53L0X, sobrecorriente OC_FAULT, stall de encoder.
+///   El motor llega a 0 en el mismo tick — máximo pico de back-EMF, pero
+///   obligatorio cuando hay peligro físico inmediato.
+///
+/// `soft` — Stop/start por rampa: interpola hacia el target del MSM a
+///   RAMP_STEP_SOFT (10 %) por ciclo de 20 ms.
+///   Usar en: comando GCS (STB/FLT), watchdog de comms, cap de safety Limit.
+///   El motor llega a 0 en ≤ 200 ms — cumple RF-005 (≤ 500 ms).
+///
+/// En estado Limit, ambos modos recortan el target a LIMIT_SPEED_CAP antes
+/// de pasarlo a la rampa (soft) o aplicarlo directo (hard ya para todo).
+macro_rules! sync_drive {
+    // ── Hard stop ──────────────────────────────────────────────────────────
+    (hard, $rover:expr, $msm:expr, $ramp:expr) => {
+        $ramp.hard_stop();
+        $rover.stop();
+    };
+    // ── Soft stop / start ──────────────────────────────────────────────────
+    (soft, $rover:expr, $msm:expr, $ramp:expr) => {{
+        let target_l = match $msm.state {
+            RoverState::Fault | RoverState::Safe | RoverState::Standby => 0,
+            _ => if $msm.safety == SafetyState::Limit {
+                $msm.drive.left.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP)
+            } else {
+                $msm.drive.left
+            },
+        };
+        let target_r = match $msm.state {
+            RoverState::Fault | RoverState::Safe | RoverState::Standby => 0,
+            _ => if $msm.safety == SafetyState::Limit {
+                $msm.drive.right.clamp(-LIMIT_SPEED_CAP, LIMIT_SPEED_CAP)
+            } else {
+                $msm.drive.right
+            },
+        };
+        let (l, r) = $ramp.step(target_l, target_r, RAMP_STEP_SOFT);
+        if l == 0 && r == 0 {
+            $rover.stop();
+        } else {
+            $rover.set_speeds(l, r);
+        }
+    }};
+}
+
+// ─── Causa de reset (MCUSR) ──────────────────────────────────────────────────
+//
+// El ATmega2560 expone en MCUSR los flags de la causa del último reset:
+//   PORF  (bit 0) — Power-on reset
+//   EXTRF (bit 1) — Reset externo (pin RESET o botón)
+//   BORF  (bit 2) — Brownout (bajada de Vcc bajo el umbral del BOD)
+//   WDRF  (bit 3) — Watchdog hardware disparó
+//
+// IMPORTANTE: hay que leer y limpiar MCUSR antes de cualquier otra init.
+// Si se inicializa el WDT antes de limpiar MCUSR, el flag WDRF puede
+// quedar activo y provocar un reset loop.
+//
+// Referencia: ATmega2560 Datasheet §11.4 (MCU Status Register).
+
+/// Lee y limpia MCUSR. Retorna una cadena ASCII estática con la causa.
+/// Si varios flags están activos (posible tras brownout + WDOG) reporta
+/// el de mayor severidad: WDOG > BROWN > EXT > POWERON.
+fn read_reset_cause() -> &'static str {
+    let mcusr = unsafe {
+        let val = (*avr_device::atmega2560::CPU::ptr()).mcusr().read().bits();
+        (*avr_device::atmega2560::CPU::ptr()).mcusr().write(|w| w.bits(0));
+        val
+    };
+    if mcusr & (1 << 3) != 0 { "RESET:WDOG"    }
+    else if mcusr & (1 << 2) != 0 { "RESET:BROWN"  }
+    else if mcusr & (1 << 1) != 0 { "RESET:EXT"    }
+    else                           { "RESET:POWERON" }
+}
+
+// ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[arduino_hal::entry]
 fn main() -> ! {
-    let dp = arduino_hal::Peripherals::take().unwrap();
+    let dp   = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    
-    let servo_pin = pins.d11.into_output();
-    let mut my_servo = StandardServo::new(servo_pin);
 
+    // ── USART0: USB — modo test desde PC ─────────────────────────────────────
+    // En producción usar USART3 (D14/D15): ver comentario en bloque ISR arriba.
+    let serial_rpi = arduino_hal::default_serial!(dp, pins, 115200);
+    let mut iface = CommandInterface::new(serial_rpi);
+
+    // Habilitar interrupción USART0 RX Complete (RXCIE0 = bit 7 de UCSR0B).
+    // La ISR USART0_RX copiará cada byte al RX_BUF antes de que el FIFO
+    // hardware (3 bytes) se desborde durante delay_ms(20).
+    // En producción (USART3): modificar UCSR3B con bit RXCIE3.
+    //
+    // IMPORTANTE: vaciar el FIFO hardware antes de habilitar la ISR.
+    // El bootloader puede dejar bytes residuales en el FIFO que, de no
+    // descartarse, la ISR los leería al ejecutar SEI y los almacenaría
+    // en RX_BUF como basura, potencialmente formando comandos inválidos
+    // (p.ej. "FLT") que pondrían la MSM en FAULT en el arranque.
+    unsafe {
+        let p = &(*avr_device::atmega2560::USART0::ptr());
+        while p.ucsr0a().read().rxc0().bit_is_set() {
+            let _ = p.udr0().read().bits(); // descartar byte residual
+        }
+        p.ucsr0b().modify(|_, w| w.rxcie0().set_bit());
+    }
+
+    // ── Timers PWM ───────────────────────────────────────────────────────────
+    let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64);
+    let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64);
+    let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64);
+
+    // ── 6 Motores — layout verificado en control_6_motors_l298n.rs v3.0 ─────
+    let fr = L298NMotor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d23.into_output(), pins.d25.into_output(), false);
+    let fl = L298NMotor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d22.into_output(), pins.d24.into_output(), false);
+    let cr = L298NMotor::new(pins.d5.into_output().into_pwm(&mut timer3),  pins.d28.into_output(), pins.d29.into_output(), false);
+    let cl = L298NMotor::new(pins.d6.into_output().into_pwm(&mut timer4),  pins.d30.into_output(), pins.d31.into_output(), false);
+    let rr = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4),  pins.d34.into_output(), pins.d35.into_output(), false);
+    let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4),  pins.d36.into_output(), pins.d37.into_output(), false);
+    let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
+
+    // ── Módulo relay 2 canales — D40(IN1/Bank2), D41(IN2/Bank3) ─────────────
+    // Active LOW: LOW = relay energizado = banco habilitado.
+    // Arranca con Bank 2 activo, Bank 3 en espera.
+    // En FAULT/SAFE → emergency_off() pone ambos HIGH → motores sin potencia.
+    let mut relay = RelayModule::new(
+        pins.d40.into_output(),
+        pins.d41.into_output(),
+    );
+
+    // ── HC-SR04 — D38(Trigger), D39(Echo) ───────────────────────────────────
+    // with_timeout limita el bloqueo a ~1.75 ms (rango útil ~300 mm).
+    // Solo usamos el sensor para detección de emergencia (< HC_EMERGENCY_MM),
+    // no para navegación → no necesitamos el rango completo de 4 m.
+    let mut hcsr04 = HCSR04::new(
+        pins.d38.into_output(),
+        pins.d39.into_floating_input().forget_imode(),
+    ).with_timeout(HC_ECHO_TIMEOUT_US);
+
+    // ── VL53L0X — D42(SDA/PL7), D43(SCL/PL6) vía soft I2C ──────────────────
+    // Módulo GY-VL53L0XV2: incluye regulador 2.8V y level-shifter integrado.
+    // VIN acepta 2.6–5.5V; I2C queda al nivel de VIN. No requiere pull-ups externos.
+    // init() puede fallar si el sensor no responde; el sistema opera solo con HC-SR04.
+    let mut tof = VL53L0X::new();
+    if tof.init() {
+        tof.start_continuous();
+        iface.log("INFO:TOF_OK");
+    } else {
+        iface.log("WARN:TOF_FAIL");
+    }
+
+    // ── INA226 — D42(SDA/PL7), D43(SCL/PL6), dirección 0x40 ────────────────
+    // Comparte el bus soft I2C con VL53L0X (0x29). Sin conflicto de dirección.
+    // Requiere shunt externo de INA226_SHUNT_MOHM mΩ en serie con la batería.
+    // WARN si falla: el monitoreo de batería (batt_mv/batt_ma) queda deshabilitado
+    // y la protección LLC-level de batería baja (< 12 V) no opera.
+    let mut ina = INA226::new();
+    if ina.init(INA226_SHUNT_MOHM) {
+        iface.log("INFO:INA226_OK");
+    } else {
+        iface.log("WARN:INA226_FAIL");
+    }
+    // I2C bus scan — diagnóstico (eliminar después de validar hardware)
+    {
+        use rover_low_level_controller::sensors::soft_i2c::SoftI2C;
+        let scanner = SoftI2C::new();
+        let found = scanner.scan();
+        let mut any = false;
+        for addr in 0x08u8..0x78 {
+            if found[(addr / 8) as usize] & (1 << (addr % 8)) != 0 {
+                let mut msg = [0u8; 16];
+                let mut i = 0;
+                for &b in b"I2C:0x" { msg[i] = b; i += 1; }
+                let hi = addr >> 4; let lo = addr & 0xF;
+                msg[i] = if hi < 10 { b'0'+hi } else { b'a'+hi-10 }; i += 1;
+                msg[i] = if lo < 10 { b'0'+lo } else { b'a'+lo-10 }; i += 1;
+                iface.log(core::str::from_utf8(&msg[..i]).unwrap_or("I2C:?"));
+                any = true;
+            }
+        }
+        if !any { iface.log("I2C:NONE"); }
+    }
+    let mut mpu = MPU6050::new();
+    let mut gyro_bias_z: f32 = 0.0;
+    let mut accel_bias_x: f32 = 0.0;
+    let mut accel_bias_z: f32 = 9.80665;
+    {
+        let who = mpu.init();
+        if who != 0 {
+            // Logea dirección e ID para diagnóstico (ej. INFO:MPU6050_OK:0x68:id=0x68)
+            let mut msg = [0u8; 32];
+            let mut i = 0;
+            for &b in b"INFO:MPU6050_OK:addr=" { msg[i] = b; i += 1; }
+            let hi = who >> 4; let lo = who & 0xF;
+            msg[i] = b'0'; i += 1; msg[i] = b'x'; i += 1;
+            msg[i] = if hi < 10 { b'0'+hi } else { b'a'+hi-10 }; i += 1;
+            msg[i] = if lo < 10 { b'0'+lo } else { b'a'+lo-10 }; i += 1;
+            msg[i] = b'\0'; i += 1;
+            iface.log(core::str::from_utf8(&msg[..i-1]).unwrap_or("INFO:MPU6050_OK"));
+        } else {
+            iface.log("WARN:MPU6050_FAIL");
+        }
+        if who != 0 {
+            iface.log("INFO:Calibrating_IMU...");
+            let mut sum_gz = 0.0; let mut sum_ax = 0.0; let mut sum_az = 0.0;
+            for _ in 0..50 {
+                if let Some(r) = mpu.read_raw() {
+                    sum_gz += r.6 as f32 * GYRO_SCALE;
+                    sum_ax += r.0 as f32 * ACCEL_SCALE;
+                    sum_az += r.2 as f32 * ACCEL_SCALE;
+                }
+                arduino_hal::delay_ms(10);
+            }
+            gyro_bias_z = sum_gz / 50.0;
+            accel_bias_x = sum_ax / 50.0;
+            accel_bias_z = sum_az / 50.0;
+            iface.log("INFO:IMU_Calibrated");
+        }
+    }
+
+    // ── USART2: TF02 LiDAR — D17(RX2) @ 115200 baud ─────────────────────────
+    // TF02 transmite frames de 9 bytes a 100 Hz sin necesitar init ni comandos.
+    // Solo conectamos RX2 (verde/TX del sensor). El blanco/RX del sensor queda libre.
+    // Voltaje LVTTL 0-3.3 V: el Mega acepta 3.3 V como HIGH sin level-shifter.
+    // USART1 ocupado por INT2/INT3 (encoders CR/CL). USART3 reservado para RPi5.
+    // Baud 115200 a 16 MHz con U2X2=1: UBRR2 = 16 (error 2.1 %).
+    unsafe {
+        let p2 = &(*avr_device::atmega2560::USART2::ptr());
+        p2.ubrr2().write(|w| w.bits(16));
+        p2.ucsr2a().write(|w| w.u2x2().set_bit());
+        p2.ucsr2b().write(|w| w.rxen2().set_bit().rxcie2().set_bit()); // RX + interrupción
+        p2.ucsr2c().write(|w| w.ucsz2().chr8().usbs2().stop1()); // 8N1 explícito
+        // Vaciar FIFO residual antes de que SEI habilite la ISR
+        while p2.ucsr2a().read().rxc2().bit_is_set() { let _ = p2.udr2().read().bits(); }
+    }
+    let mut tf02 = TF02::new();
+    iface.log("INFO:TF02_INIT");
+
+    // ── ADC + sensores analógicos ─────────────────────────────────────────────
+    // ACS712 (corriente):         A0=FR A1=FL A2=CR A3=CL A4=RR A5=RL
+    // LM335  (temp. ambiente):    A6
+    // NTC    (temp. baterías):    A7=B1a A8=B1b A9=B2a A10=B2b A11=B3a A12=B3b
+    let mut adc     = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let acs_fr_pin  = pins.a0.into_analog_input(&mut adc);
+    let acs_fl_pin  = pins.a1.into_analog_input(&mut adc);
+    let acs_cr_pin  = pins.a2.into_analog_input(&mut adc);
+    let acs_cl_pin  = pins.a3.into_analog_input(&mut adc);
+    let acs_rr_pin  = pins.a4.into_analog_input(&mut adc);
+    let acs_rl_pin  = pins.a5.into_analog_input(&mut adc);
+    let lm335_pin   = pins.a6.into_analog_input(&mut adc);
+    let ntc_b1a_pin = pins.a7.into_analog_input(&mut adc);   // Banco 1 — sensor A
+    let ntc_b1b_pin = pins.a8.into_analog_input(&mut adc);   // Banco 1 — sensor B
+    let ntc_b2a_pin = pins.a9.into_analog_input(&mut adc);   // Banco 2 — sensor A
+    let ntc_b2b_pin = pins.a10.into_analog_input(&mut adc);  // Banco 2 — sensor B
+    let ntc_b3a_pin = pins.a11.into_analog_input(&mut adc);  // Banco 3 — sensor A
+    let ntc_b3b_pin = pins.a12.into_analog_input(&mut adc);  // Banco 3 — sensor B
+
+    // Instancias ACS712 por motor [FR, FL, CR, CL, RR, RL].
+    // La variante se elige en compilación según el feature activo.
+    // Para calibrar el zero_mv de un motor concreto usar .calibrate_zero(mv).
+    #[cfg(feature = "mixed-drivers")]
+    let acs: [ACS712; 6] = [
+        ACS712::new_05a(), ACS712::new_05a(), // FR, FL → L298N
+        ACS712::new_30a(), ACS712::new_30a(), // CR, CL → BTS7960
+        ACS712::new_30a(), ACS712::new_30a(), // RR, RL → BTS7960
+    ];
+    #[cfg(feature = "all-bts7960")]
+    let acs: [ACS712; 6] = [ACS712::new_30a(); 6];
+    #[cfg(feature = "all-20a")]
+    let acs: [ACS712; 6] = [ACS712::new_20a(); 6]; // trade-off: un tipo para todos
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
+    let acs: [ACS712; 6] = [ACS712::new_05a(); 6]; // all-l298n (default)
+
+    let lm335 = LM335::new(); // offset 0 K — ajustar con with_offset si es necesario
+
+    // Instancias NTC por sensor de batería [B1a, B1b, B2a, B2b, B3a, B3b].
+    // offset 0 — calibrar con .calibrate(offset_c) tras verificación en hardware.
+    let ntc_batt: [NTCThermistor; 6] = [NTCThermistor::new(); 6];
+
+    // ── Interrupciones externas INT0–INT5 (rising edge) ──────────────────────
+    // EICRA: controla INT0–INT3 (ISCn1=1, ISCn0=1 → rising edge)
+    // EICRB: controla INT4–INT5 (ISCn1=1, ISCn0=1 → rising edge)
+    // EIMSK: habilita INT0–INT5 (bits 0–5)
+    dp.EXINT.eicra().write(|w| unsafe { w.bits(0xFF) });
+    dp.EXINT.eicrb().write(|w| unsafe { w.bits(0x0F) });
+    dp.EXINT.eimsk().write(|w| unsafe { w.bits(0x3F) });
+    unsafe { avr_device::interrupt::enable() };
+
+    // ── Estado del loop ──────────────────────────────────────────────────────
+    let mut msm              = MasterStateMachine::new();
+    // Rampa de velocidad: interpola entre velocidad actual y objetivo del MSM
+    // para evitar picos de back-EMF en frenadas bruscas. Ver src/ramp.rs.
+    let mut ramp             = DriveRamp::new();
+    let mut resp_buf         = [0u8; RESP_BUF];
+    let mut tlm_counter:      u8 = 0;
+    let mut hc_counter:       u8 = 0;
+    let mut sen_counter:      u8 = 0;
+    let mut sen_fast_counter: u8 = 0;
+    let mut elapsed_ms:      u32 = 0; // timestamp relativo desde arranque (overflow ~49 días)
+    let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
+
+    // --- Calibración de Bias IMU ---
+    let mut calib_samples: u16 = 0;
+
+    // Estado de stall por encoder (parallel al stall_mask de la MSM)
+    let mut last_counts  = [0i32; 6];
+    let mut stall_timers = [0u16; 6];
+    // Ciclos consecutivos sin frame TF02 válido. Satura en 500 (~10 s); emite WARN una vez.
+    let mut tf02_no_data: u16 = 0;
+    // Bytes crudos recibidos de USART2 (satura en 65535). Logueado junto al WARN para diagnóstico.
+    let mut tf02_raw_rx: u16 = 0;
+    // Buffer de los primeros 18 bytes crudos de USART2 (2 frames) para hex dump en WARN.
+    let mut tf02_raw_buf  = [0u8; 18];
+    let mut tf02_raw_fill: u8 = 0;
+    // Loguea SIG del primer frame válido para diagnosticar qué envía el sensor real.
+    let mut tf02_sig_logged: bool = false;
+
+    iface.log(read_reset_cause());
+    iface.log("=== ROVER OLYMPUS v2.17 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB ===");
+
+    // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
-        for angle in (0..=180).step_by(10) {
-            for _ in 0..15 {
-                my_servo.set_angle(angle);
-                arduino_hal::delay_ms(18);
+        // 1. Watchdog de comunicación
+        if let Some(wdog_resp) = msm.tick() {
+            sync_drive!(soft, rover, msm, ramp); // watchdog: no hay peligro físico, rampa suave
+            iface.send_response(format_response(wdog_resp, &mut resp_buf));
+        }
+
+        // 1.5. EKF — cada ciclo (~20 ms); dentro del watchdog solo se actualizaba en timeout
+        if let Some(raw) = mpu.read_raw() {
+            let ax = raw.0 as f32 * ACCEL_SCALE - accel_bias_x;
+            let az = raw.2 as f32 * ACCEL_SCALE - accel_bias_z + 9.80665;
+            let gz = raw.6 as f32 * GYRO_SCALE - gyro_bias_z;
+            let ekf = unsafe { &mut EKF };
+            let deL = ENCODER_FL.get_counts().wrapping_sub(last_counts[1]) + ENCODER_CL.get_counts().wrapping_sub(last_counts[3]) + ENCODER_RL.get_counts().wrapping_sub(last_counts[5]);
+            let deR = ENCODER_FR.get_counts().wrapping_sub(last_counts[0]) + ENCODER_CR.get_counts().wrapping_sub(last_counts[2]) + ENCODER_RR.get_counts().wrapping_sub(last_counts[4]);
+            predict(ekf, deL, deR, ax, az);
+            update_gyro(ekf, gz);
+            sensor_frame.x_mm = ekf.x as i32 * 1000;
+            sensor_frame.y_mm = ekf.y as i32 * 1000;
+            sensor_frame.theta_mrad = (ekf.theta * 1000.0) as i16;
+        }
+
+        // 2. HC-SR04 + VL53L0X — lectura cada HC_READ_PERIOD ciclos (~100 ms)
+        //    HC-SR04 es bloqueante (~30 ms max); VL53L0X no bloquea (modo continuo).
+        hc_counter = hc_counter.wrapping_add(1);
+        if hc_counter >= HC_READ_PERIOD {
+            hc_counter = 0;
+            #[cfg(not(feature = "no-hcsr04"))]
+            {
+                let hc_thresh = if msm.state == RoverState::Climb { CLB_HC_EMERGENCY_MM } else { HC_EMERGENCY_MM };
+                if let Ok(mm) = hcsr04.measure_mm() {
+                    if mm < hc_thresh {
+                        let resp = msm.process(Command::Fault);
+                        relay.emergency_off(); // corte hardware: obstáculo físico
+                        sync_drive!(hard, rover, msm, ramp);
+                        iface.send_response(format_response(resp, &mut resp_buf));
+                    }
+                }
+            }
+            // VL53L0X: lectura no bloqueante — NotReady si el sensor aún no tiene muestra.
+            let tof_thresh = if msm.state == RoverState::Climb { CLB_TOF_EMERGENCY_MM } else { TOF_EMERGENCY_MM };
+            if tof.ready {
+                if let Ok(mm) = tof.read_mm() {
+                    sensor_frame.dist_mm = mm;
+                    if mm < tof_thresh {
+                        let resp = msm.process(Command::Fault);
+                        relay.emergency_off(); // corte hardware: ToF láser
+                        sync_drive!(hard, rover, msm, ramp);
+                        iface.send_response(format_response(resp, &mut resp_buf));
+                    }
+                }
             }
         }
 
-        for angle in (0..=180).rev().step_by(10) {
-            for _ in 0..15 {
-                my_servo.set_angle(angle);
-                arduino_hal::delay_ms(18);
+        // 2b. TF02 — drenar bytes disponibles de USART2 (non-blocking)
+        //     A 100 Hz × 9 bytes = 900 B/s → ~18 bytes por ciclo de 20 ms.
+        //     Solo actualiza dist_far_mm; el HLC decide la evasión de obstáculos.
+        let mut tf02_frame_this_cycle = false;
+        while let Some(byte) = TF02_RX_BUF.pop() {
+            tf02_raw_rx = tf02_raw_rx.saturating_add(1);
+            if (tf02_raw_fill as usize) < tf02_raw_buf.len() {
+                tf02_raw_buf[tf02_raw_fill as usize] = byte;
+                tf02_raw_fill += 1;
+            }
+            if tf02.feed(byte) {
+                sensor_frame.dist_far_mm = tf02.last_dist_mm;
+                tf02_frame_this_cycle = true;
+                if !tf02_sig_logged {
+                    tf02_sig_logged = true;
+                    let mut sig_buf = [0u8; 16];
+                    let mut si = 0;
+                    for &b in b"INFO:TF02_SIG:" { sig_buf[si] = b; si += 1; }
+                    write_u32(tf02.last_sig as u32, &mut sig_buf, &mut si);
+                    sig_buf[si] = b'\n'; si += 1;
+                    iface.send_response(&sig_buf[..si]);
+                }
             }
         }
+        if tf02_frame_this_cycle {
+            tf02_no_data = 0;
+        } else if tf02_no_data < 500 {
+            tf02_no_data += 1;
+            if tf02_no_data == 500 {
+                // Loguear bytes crudos: 0 = cable D17 desconectado; >0 = baud/protocolo incorrecto
+                let mut warn_buf = [0u8; 32];
+                let mut wi = 0;
+                for &b in b"WARN:TF02_NO_DATA:RX=" { warn_buf[wi] = b; wi += 1; }
+                write_u32(tf02_raw_rx as u32, &mut warn_buf, &mut wi);
+                warn_buf[wi] = b'\n'; wi += 1;
+                iface.send_response(&warn_buf[..wi]);
+                // Hex dump de los primeros bytes capturados: "TF02_RAW:59 59 03 ..."
+                if tf02_raw_fill > 0 {
+                    // Buffer fijo: "TF02_RAW:" + hasta 18 bytes × "XX " + "\n" = 9 + 54 + 1 = 64
+                    let mut raw_buf = [0u8; 64];
+                    let mut ri = 0;
+                    for &b in b"TF02_RAW:" { raw_buf[ri] = b; ri += 1; }
+                    const HEX: &[u8] = b"0123456789ABCDEF";
+                    for idx in 0..(tf02_raw_fill as usize) {
+                        let byte = tf02_raw_buf[idx];
+                        raw_buf[ri] = HEX[(byte >> 4) as usize]; ri += 1;
+                        raw_buf[ri] = HEX[(byte & 0xF) as usize]; ri += 1;
+                        if idx + 1 < tf02_raw_fill as usize { raw_buf[ri] = b' '; ri += 1; }
+                    }
+                    raw_buf[ri] = b'\n'; ri += 1;
+                    iface.send_response(&raw_buf[..ri]);
+                }
+            }
+        }
+
+        // 3. Stall detection via encoders
+        // Lee los 6 contadores y compara con el ciclo anterior.
+        {
+            let counts = [
+                ENCODER_FR.get_counts(), ENCODER_FL.get_counts(),
+                ENCODER_CR.get_counts(), ENCODER_CL.get_counts(),
+                ENCODER_RR.get_counts(), ENCODER_RL.get_counts(),
+            ];
+            
+            // --- Telemetría RAW para Calibración EKF/MATLAB (v2.13) ---
+            // Formato: RAW:tick:ax:ay:az:gx:gy:gz:encL:encR
+            if let Some(raw) = mpu.read_raw() {
+                let mut raw_buf = [0u8; 100];
+                let mut r_i = 0;
+                for &b in b"RAW:" { raw_buf[r_i] = b; r_i += 1; }
+                write_u32(elapsed_ms, &mut raw_buf, &mut r_i);
+                for val in &[raw.0, raw.1, raw.2, raw.4, raw.5, raw.6] { // ax, ay, az, gx, gy, gz
+                    raw_buf[r_i] = b':'; r_i += 1;
+                    write_i32(*val as i32, &mut raw_buf, &mut r_i);
+                }
+                raw_buf[r_i] = b':'; r_i += 1;
+                write_i32(counts[1].wrapping_add(counts[3]).wrapping_add(counts[5]), &mut raw_buf, &mut r_i); // Total Left
+                raw_buf[r_i] = b':'; r_i += 1;
+                write_i32(counts[0].wrapping_add(counts[2]).wrapping_add(counts[4]), &mut raw_buf, &mut r_i); // Total Right
+                raw_buf[r_i] = b'\n'; r_i += 1;
+                iface.send_response(&raw_buf[..r_i]);
+            }
+
+            // Velocidad por motor: [FR, FL, CR, CL, RR, RL]
+            // FR/CR/RR → lado derecho, FL/CL/RL → lado izquierdo
+            let speeds = [
+                msm.drive.right, msm.drive.left,   // FR, FL
+                msm.drive.right, msm.drive.left,   // CR, CL
+                msm.drive.right, msm.drive.left,   // RR, RL
+            ];
+            let stall_thresh = if msm.state == RoverState::Climb { CLB_STALL_THRESHOLD } else { STALL_THRESHOLD };
+            let mut stall_mask: u8 = 0;
+            for i in 0..6usize {
+                if speeds[i].abs() > STALL_SPEED_MIN && counts[i] == last_counts[i] {
+                    stall_timers[i] = stall_timers[i].saturating_add(1);
+                } else {
+                    stall_timers[i] = 0;
+                }
+                last_counts[i] = counts[i];
+                if stall_timers[i] > stall_thresh {
+                    stall_mask |= 1 << i;
+                }
+            }
+            // Acumuladores de odometría: izquierdo = FL(1)+CL(3)+RL(5), derecho = FR(0)+CR(2)+RR(4)
+            sensor_frame.enc_left  = counts[1].wrapping_add(counts[3]).wrapping_add(counts[5]);
+            sensor_frame.enc_right = counts[0].wrapping_add(counts[2]).wrapping_add(counts[4]);
+            if stall_mask != 0 {
+                msm.update_safety(stall_mask);
+                relay.emergency_off(); // corte hardware: stall encoder detectado
+                sync_drive!(hard, rover, msm, ramp);
+                iface.send_response(format_response(msm.telemetry(stall_mask, sensor_frame), &mut resp_buf));
+            }
+        }
+
+        // 4. Comando entrante desde RPi5 (interrupt-driven via RX_BUF)
+        if iface.poll_from_ring(&RX_BUF) {
+            // Copiar a buffer local para liberar el borrow de iface
+            let mut cmd_buf = [0u8; 32];
+            let cmd_len = {
+                let raw = iface.get_command();
+                let len = raw.len().min(32);
+                cmd_buf[..len].copy_from_slice(&raw[..len]);
+                len
+            };
+            let cmd_bytes = &cmd_buf[..cmd_len];
+            let response = match parse_command(cmd_bytes) {
+                Some(cmd) => msm.process(cmd),
+                None      => Response::ErrUnknown,
+            };
+            // Aplicar efectos secundarios de relay según la respuesta.
+            match response {
+                Response::BankChange(mode) => relay.set_mode(mode),
+                Response::Ack(RoverState::Fault) | Response::Ack(RoverState::Safe) => {
+                    relay.emergency_off(); // FLT/SAFE por comando GCS
+                }
+                Response::Ack(RoverState::Standby) if msm.state == RoverState::Standby => {
+                    // RST regresa a Standby: restaurar Bank 2 (relay vuelve a normal)
+                    relay.reset_normal();
+                }
+                _ => {}
+            }
+            sync_drive!(soft, rover, msm, ramp);
+            iface.send_response(format_response(response, &mut resp_buf));
+        }
+
+        // 5a. Chequeo rápido de sobrecorriente — cada SEN_FAST_PERIOD ciclos (~60 ms).
+        //     Solo 2 muestras por canal (~1.25 ms bloqueantes): detecta Fault únicamente.
+        //     No actualiza sensor_frame (usa las últimas lecturas lentas para TLM).
+        sen_fast_counter = sen_fast_counter.wrapping_add(1);
+        if sen_fast_counter >= SEN_FAST_PERIOD && msm.state != RoverState::Fault {
+            sen_fast_counter = 0;
+            let fast_raw = [
+                adc_avg!(acs_fr_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_fl_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_cr_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_cl_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_rr_pin, adc, SEN_FAST_SAMPLES),
+                adc_avg!(acs_rl_pin, adc, SEN_FAST_SAMPLES),
+            ];
+            let mut fault_mask: u8 = 0;
+            for i in 0..6usize {
+                if acs[i].read_ma(fast_raw[i]).abs() > OC_FAULT[i] {
+                    fault_mask |= 1 << i;
+                }
+            }
+            if fault_mask != 0 {
+                msm.update_overcurrent(SafetyState::FaultStall);
+                relay.emergency_off(); // corte hardware: sobrecorriente OC_FAULT rápida
+                sync_drive!(hard, rover, msm, ramp);
+                iface.send_response(format_response(
+                    msm.telemetry(fault_mask, sensor_frame), &mut resp_buf));
+            }
+        }
+
+        // 5b. Sensores analógicos — corriente y temperatura, cada SEN_READ_PERIOD ciclos (~500 ms).
+        //     8 muestras: lectura precisa para Warn/Limit + actualiza sensor_frame para TLM.
+        sen_counter = sen_counter.wrapping_add(1);
+        if sen_counter >= SEN_READ_PERIOD {
+            sen_counter = 0;
+
+            let raw_i = [
+                adc_avg!(acs_fr_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_fl_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_cr_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_cl_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_rr_pin, adc, SEN_SAMPLES),
+                adc_avg!(acs_rl_pin, adc, SEN_SAMPLES),
+            ];
+
+            // Clasificar el peor nivel de corriente entre los 6 motores.
+            // Cada motor usa su propia instancia ACS712 y sus umbrales OC_*[i].
+            let mut worst = SafetyState::Normal;
+            for i in 0..6usize {
+                let current_ma = acs[i].read_ma(raw_i[i]);
+                sensor_frame.currents[i] = current_ma;
+                let abs_ma = current_ma.abs();
+                let level = if abs_ma > OC_FAULT[i] {
+                    SafetyState::FaultStall
+                } else if abs_ma > OC_LIMIT[i] {
+                    SafetyState::Limit
+                } else if abs_ma > OC_WARN[i] {
+                    SafetyState::Warn
+                } else {
+                    SafetyState::Normal
+                };
+                if level > worst { worst = level; }
+            }
+
+            #[cfg(not(feature = "no-lm335"))]
+            {
+                let raw_t = adc_avg!(lm335_pin, adc, SEN_SAMPLES);
+                let t_amb = lm335.read_celsius(raw_t);
+                match check_temp_c(t_amb, AMBIENT_TEMP_MIN_C, AMBIENT_TEMP_MAX_C) {
+                    Some(t_valid) => {
+                        sensor_frame.temp_c = t_valid;
+                        if t_valid >= AMBIENT_SAFE_C
+                            && msm.state != RoverState::Safe
+                            && msm.state != RoverState::Fault
+                        {
+                            msm.process(Command::Safe);
+                            relay.emergency_off();
+                            sync_drive!(hard, rover, msm, ramp);
+                            iface.log("ALARM:AMBIENT_OVERHEAT_SAFE_MODE");
+                        }
+                    }
+                    None => iface.log("WARN:LM335_OOR"),
+                }
+            }
+
+            // INA226 — tensión y corriente total de batería
+            if ina.ready {
+                sensor_frame.batt_mv = ina.read_bus_mv();
+                sensor_frame.batt_ma = ina.read_current_ma();
+            // Protección de batería baja (EPS-REQ-002 / SYS-FUN-040a):
+            // Si el INA226 lee < 12 V (con lectura válida > 5 V para descartar
+            // el arranque en frío), el LLC entra en Safe Mode directamente sin
+            // esperar al HLC. El HLC también detecta esta condición vía TLM y
+            // emite Command::Safe, pero la protección en LLC es la última línea.
+            if sensor_frame.batt_mv > 5000 && sensor_frame.batt_mv < 12000 {
+                if msm.state != RoverState::Safe && msm.state != RoverState::Fault {
+                    msm.process(Command::Safe);
+                    relay.emergency_off(); // corte hardware: batería crítica Bank 1
+                    sync_drive!(hard, rover, msm, ramp);
+                    iface.log("ALARM:LOW_BATTERY_SAFE_MODE");
+                }
+            }
+            }
+
+            // Leer 6 sensores NTC de batería y clasificar el peor nivel térmico.
+            let raw_batt = [
+                adc_avg!(ntc_b1a_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b1b_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b2a_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b2b_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b3a_pin, adc, SEN_SAMPLES),
+                adc_avg!(ntc_b3b_pin, adc, SEN_SAMPLES),
+            ];
+            for i in 0..6usize {
+                let t_raw = ntc_batt[i].read_celsius(raw_batt[i]);
+                // Validar plausibilidad antes de usar en clasificación de seguridad.
+                // NTC desconectado (ADC flotante) puede devolver -20 °C o 100 °C,
+                // valores que están en los extremos del rango válido. Si el ADC
+                // devuelve un valor imposible (fuera de -20..100) es basura → ignorar.
+                let t = match check_temp_c(t_raw, BATT_TEMP_MIN_C, BATT_TEMP_MAX_C) {
+                    Some(t_valid) => t_valid,
+                    None => {
+                        iface.log("WARN:NTC_OOR");
+                        continue; // no actualizar sensor_frame ni clasificar nivel
+                    }
+                };
+                sensor_frame.batt_temps[i] = t;
+                let level = if t > BATT_FAULT_C {
+                    SafetyState::FaultStall
+                } else if t > BATT_LIMIT_C {
+                    SafetyState::Limit
+                } else if t > BATT_WARN_C {
+                    SafetyState::Warn
+                } else {
+                    SafetyState::Normal
+                };
+                if level > worst { worst = level; }
+            }
+
+            let prev_safety = msm.safety;
+            let faulted = msm.update_overcurrent(worst);
+
+            // sync_drive si: hay fault, safety cambió (cap aplicado/eliminado), o sigue en Warn/Limit.
+            // hard si hay fault real (sobrecorriente superó OC_FAULT en la lectura lenta);
+            // soft si solo cambió el nivel Warn/Limit (aplicar o levantar el speed cap).
+            if faulted {
+                sync_drive!(hard, rover, msm, ramp); // sobrecorriente confirmada: stop inmediato
+            } else if msm.safety != prev_safety || msm.safety != SafetyState::Normal {
+                sync_drive!(soft, rover, msm, ramp); // cap de velocidad: rampa hacia nuevo límite
+            }
+            // TLM inmediato si el estado no es Normal
+            if faulted || msm.safety != SafetyState::Normal {
+                iface.send_response(format_response(
+                    msm.telemetry(0, sensor_frame), &mut resp_buf));
+            }
+        }
+
+        // 6. Telemetría periódica (~1 s) — stall_mask siempre 0 aquí porque
+        //    si hubiera stall ya se reportó en el bloque de encoders arriba.
+        tlm_counter = tlm_counter.wrapping_add(1);
+        if tlm_counter >= TLM_PERIOD {
+            tlm_counter = 0;
+            iface.send_response(format_response(msm.telemetry(0, sensor_frame), &mut resp_buf));
+        }
+
+        // Actualizar timestamp relativo antes del delay para que el próximo
+        // ciclo (y el TLM periódico) reflejen el tiempo acumulado real.
+        elapsed_ms = elapsed_ms.wrapping_add(LOOP_MS);
+        sensor_frame.tick_ms = elapsed_ms;
+
+        // delay_ms restaurado: la ISR USART0_RX garantiza que ningún byte
+        // se pierde durante el bloqueo. Ver docs/debug_usart_overflow.md.
+        arduino_hal::delay_ms(LOOP_MS);
+    }
+}
+
+fn write_u32(val: u32, buf: &mut [u8], i: &mut usize) {
+    if val == 0 {
+        buf[*i] = b'0'; *i += 1; return;
+    }
+    let mut tmp = [0u8; 10];
+    let mut len = 0;
+    let mut v = val;
+    while v > 0 {
+        tmp[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    for k in (0..len).rev() {
+        buf[*i] = tmp[k]; *i += 1;
+    }
+}
+
+fn write_i32(val: i32, buf: &mut [u8], i: &mut usize) {
+    if val < 0 {
+        buf[*i] = b'-'; *i += 1;
+        write_u32(val.wrapping_neg() as u32, buf, i);
+    } else {
+        write_u32(val as u32, buf, i);
     }
 }

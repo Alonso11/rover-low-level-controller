@@ -1,0 +1,30 @@
+[project]
+name = "olympus-llc-tests"
+version = "0.1.0"
+description = "Test suite for Olympus Rover LLC (hardware + unit)"
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial>=3.5",
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+]
+
+[project.optional-dependencies]
+ftdi = ["pyftdi>=0.55"]   # captura directa FT232H sin sigrok
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: corre en x86 sin hardware",
+    "hardware: requiere Arduino Mega conectado por USB",
+    "sigrok: requiere FT232H conectado",
+]
+timeout = 30
+
+[tool.uv]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4",
+]
