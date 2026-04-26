@@ -163,6 +163,9 @@ impl MasterStateMachine {
                 self.safety = SafetyState::Normal;
                 Response::Ack(RoverState::Standby)
             }
+            // BNK:0 siempre permitido — corte de emergencia hardware, incluso en FAULT/SAFE.
+            // Debe ir ANTES del wildcard guard o Rust lo captura y devuelve ErrEstop.
+            Command::BankSelect(BankMode::AllOff) => Response::BankChange(BankMode::AllOff),
             _ if self.state == RoverState::Fault || self.state == RoverState::Safe => Response::ErrEstop,
             Command::Standby => {
                 self.state = RoverState::Standby;

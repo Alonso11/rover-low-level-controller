@@ -410,7 +410,11 @@ fn main() -> ! {
     loop {
         // 1. Watchdog de comunicación
         if let Some(wdog_resp) = msm.tick() {
-        // --- EKF Update Step (MPU-6050 + Encoders) ---
+            sync_drive!(soft, rover, msm, ramp); // watchdog: no hay peligro físico, rampa suave
+            iface.send_response(format_response(wdog_resp, &mut resp_buf));
+        }
+
+        // 1.5. EKF — cada ciclo (~20 ms); dentro del watchdog solo se actualizaba en timeout
         if let Some(raw) = mpu.read_raw() {
             let ax = raw.0 as f32 * ACCEL_SCALE - accel_bias_x;
             let az = raw.2 as f32 * ACCEL_SCALE - accel_bias_z + 9.80665;
@@ -423,9 +427,6 @@ fn main() -> ! {
             sensor_frame.x_mm = ekf.x as i32 * 1000;
             sensor_frame.y_mm = ekf.y as i32 * 1000;
             sensor_frame.theta_mrad = (ekf.theta * 1000.0) as i16;
-        }
-            sync_drive!(soft, rover, msm, ramp); // watchdog: no hay peligro físico, rampa suave
-            iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
 
         // 2. HC-SR04 + VL53L0X — lectura cada HC_READ_PERIOD ciclos (~100 ms)
