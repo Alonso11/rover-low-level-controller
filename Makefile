@@ -110,6 +110,10 @@ i2c-scan:
 	@printf "$(BOLD)>> I2C scan → $(PORT)$(RESET)\n"
 	uv run python tests/hardware/i2c_scan.py $(PORT)
 
+test-tf02:
+	@printf "$(BOLD)>> TF02 LiDAR UART → $(PORT)$(RESET)\n"
+	uv run python tests/hardware/test_tf02.py $(PORT)
+
 test-sensors:
 	@printf "$(BOLD)>> INT-04b: sensores individuales → $(PORT)$(RESET)\n"
 	uv run python tests/hardware/test_sensors_individual.py $(PORT)

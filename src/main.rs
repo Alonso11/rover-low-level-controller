@@ -103,7 +103,8 @@ fn INT5() { ENCODER_RL.pulse(); }
 // MODO TEST (actual): USART0 (USB) — ISR: USART0_RX, registro: UDR0
 // MODO PRODUCCIÓN:    USART3 (RPi) — cambiar ISR a USART3_RX y leer UDR3
 
-static RX_BUF: RxRingBuffer = RxRingBuffer::new();
+static RX_BUF:     RxRingBuffer = RxRingBuffer::new();
+static TF02_RX_BUF: RxRingBuffer = RxRingBuffer::new();
 
 // ─── EKF estático (sin heap) ───────────────────────────────────────────────────
 static mut EKF: EkfState = EkfState::new(0.01, 0.09);
@@ -112,12 +113,20 @@ static mut EKF: EkfState = EkfState::new(0.01, 0.09);
 /// En producción (USART3) renombrar a USART3_RX y leer UDR3.
 #[avr_device::interrupt(atmega2560)]
 fn USART0_RX() {
-    // Safety: acceso al registro hardware en contexto de interrupción.
-    // Las interrupciones globales están deshabilitadas implícitamente durante ISR.
     let byte = unsafe {
         (*avr_device::atmega2560::USART0::ptr()).udr0().read().bits()
     };
     unsafe { RX_BUF.push(byte); }
+}
+
+/// ISR USART2 RX Complete — almacena cada byte del TF02 antes de que el FIFO se llene.
+/// El TF02 envía 9 bytes en ~781 µs (115200 baud); sin ISR los bytes 3-9 se pierden.
+#[avr_device::interrupt(atmega2560)]
+fn USART2_RX() {
+    let byte = unsafe {
+        (*avr_device::atmega2560::USART2::ptr()).udr2().read().bits()
+    };
+    unsafe { TF02_RX_BUF.push(byte); }
 }
 
 // ─── Macro auxiliar ──────────────────────────────────────────────────────────
@@ -365,8 +374,10 @@ fn main() -> ! {
         let p2 = &(*avr_device::atmega2560::USART2::ptr());
         p2.ubrr2().write(|w| w.bits(16));
         p2.ucsr2a().write(|w| w.u2x2().set_bit());
-        p2.ucsr2b().write(|w| w.rxen2().set_bit()); // solo RX
-        // UCSR2C: reset default = 0x06 (8-bit, no parity, 1 stop) — no touch
+        p2.ucsr2b().write(|w| w.rxen2().set_bit().rxcie2().set_bit()); // RX + interrupción
+        p2.ucsr2c().write(|w| w.ucsz2().chr8().usbs2().stop1()); // 8N1 explícito
+        // Vaciar FIFO residual antes de que SEI habilite la ISR
+        while p2.ucsr2a().read().rxc2().bit_is_set() { let _ = p2.udr2().read().bits(); }
     }
     let mut tf02 = TF02::new();
     iface.log("INFO:TF02_INIT");
@@ -442,6 +453,11 @@ fn main() -> ! {
     let mut stall_timers = [0u16; 6];
     // Ciclos consecutivos sin frame TF02 válido. Satura en 500 (~10 s); emite WARN una vez.
     let mut tf02_no_data: u16 = 0;
+    // Bytes crudos recibidos de USART2 (satura en 65535). Logueado junto al WARN para diagnóstico.
+    let mut tf02_raw_rx: u16 = 0;
+    // Buffer de los primeros 18 bytes crudos de USART2 (2 frames) para hex dump en WARN.
+    let mut tf02_raw_buf  = [0u8; 18];
+    let mut tf02_raw_fill: u8 = 0;
     // Loguea SIG del primer frame válido para diagnosticar qué envía el sensor real.
     let mut tf02_sig_logged: bool = false;
 
@@ -507,22 +523,23 @@ fn main() -> ! {
         //     A 100 Hz × 9 bytes = 900 B/s → ~18 bytes por ciclo de 20 ms.
         //     Solo actualiza dist_far_mm; el HLC decide la evasión de obstáculos.
         let mut tf02_frame_this_cycle = false;
-        unsafe {
-            let p2 = &(*avr_device::atmega2560::USART2::ptr());
-            while p2.ucsr2a().read().rxc2().bit_is_set() {
-                let byte = p2.udr2().read().bits();
-                if tf02.feed(byte) {
-                    sensor_frame.dist_far_mm = tf02.last_dist_mm;
-                    tf02_frame_this_cycle = true;
-                    if !tf02_sig_logged {
-                        tf02_sig_logged = true;
-                        let mut sig_buf = [0u8; 16];
-                        let mut si = 0;
-                        for &b in b"INFO:TF02_SIG:" { sig_buf[si] = b; si += 1; }
-                        write_u32(tf02.last_sig as u32, &mut sig_buf, &mut si);
-                        sig_buf[si] = b'\n'; si += 1;
-                        iface.send_response(&sig_buf[..si]);
-                    }
+        while let Some(byte) = TF02_RX_BUF.pop() {
+            tf02_raw_rx = tf02_raw_rx.saturating_add(1);
+            if (tf02_raw_fill as usize) < tf02_raw_buf.len() {
+                tf02_raw_buf[tf02_raw_fill as usize] = byte;
+                tf02_raw_fill += 1;
+            }
+            if tf02.feed(byte) {
+                sensor_frame.dist_far_mm = tf02.last_dist_mm;
+                tf02_frame_this_cycle = true;
+                if !tf02_sig_logged {
+                    tf02_sig_logged = true;
+                    let mut sig_buf = [0u8; 16];
+                    let mut si = 0;
+                    for &b in b"INFO:TF02_SIG:" { sig_buf[si] = b; si += 1; }
+                    write_u32(tf02.last_sig as u32, &mut sig_buf, &mut si);
+                    sig_buf[si] = b'\n'; si += 1;
+                    iface.send_response(&sig_buf[..si]);
                 }
             }
         }
@@ -531,7 +548,29 @@ fn main() -> ! {
         } else if tf02_no_data < 500 {
             tf02_no_data += 1;
             if tf02_no_data == 500 {
-                iface.log("WARN:TF02_NO_DATA");
+                // Loguear bytes crudos: 0 = cable D17 desconectado; >0 = baud/protocolo incorrecto
+                let mut warn_buf = [0u8; 32];
+                let mut wi = 0;
+                for &b in b"WARN:TF02_NO_DATA:RX=" { warn_buf[wi] = b; wi += 1; }
+                write_u32(tf02_raw_rx as u32, &mut warn_buf, &mut wi);
+                warn_buf[wi] = b'\n'; wi += 1;
+                iface.send_response(&warn_buf[..wi]);
+                // Hex dump de los primeros bytes capturados: "TF02_RAW:59 59 03 ..."
+                if tf02_raw_fill > 0 {
+                    // Buffer fijo: "TF02_RAW:" + hasta 18 bytes × "XX " + "\n" = 9 + 54 + 1 = 64
+                    let mut raw_buf = [0u8; 64];
+                    let mut ri = 0;
+                    for &b in b"TF02_RAW:" { raw_buf[ri] = b; ri += 1; }
+                    const HEX: &[u8] = b"0123456789ABCDEF";
+                    for idx in 0..(tf02_raw_fill as usize) {
+                        let byte = tf02_raw_buf[idx];
+                        raw_buf[ri] = HEX[(byte >> 4) as usize]; ri += 1;
+                        raw_buf[ri] = HEX[(byte & 0xF) as usize]; ri += 1;
+                        if idx + 1 < tf02_raw_fill as usize { raw_buf[ri] = b' '; ri += 1; }
+                    }
+                    raw_buf[ri] = b'\n'; ri += 1;
+                    iface.send_response(&raw_buf[..ri]);
+                }
             }
         }
 
