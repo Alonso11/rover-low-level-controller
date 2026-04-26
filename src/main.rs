@@ -1,4 +1,4 @@
-// Version: v2.16
+// Version: v2.17
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -440,9 +440,11 @@ fn main() -> ! {
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
     let mut last_counts  = [0i32; 6];
     let mut stall_timers = [0u16; 6];
+    // Ciclos consecutivos sin frame TF02 válido. Satura en 500 (~10 s); emite WARN una vez.
+    let mut tf02_no_data: u16 = 0;
 
     iface.log(read_reset_cause());
-    iface.log("=== ROVER OLYMPUS v2.16 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB ===");
+    iface.log("=== ROVER OLYMPUS v2.17 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -502,13 +504,23 @@ fn main() -> ! {
         // 2b. TF02 — drenar bytes disponibles de USART2 (non-blocking)
         //     A 100 Hz × 9 bytes = 900 B/s → ~18 bytes por ciclo de 20 ms.
         //     Solo actualiza dist_far_mm; el HLC decide la evasión de obstáculos.
+        let mut tf02_frame_this_cycle = false;
         unsafe {
             let p2 = &(*avr_device::atmega2560::USART2::ptr());
             while p2.ucsr2a().read().rxc2().bit_is_set() {
                 let byte = p2.udr2().read().bits();
                 if tf02.feed(byte) {
                     sensor_frame.dist_far_mm = tf02.last_dist_mm;
+                    tf02_frame_this_cycle = true;
                 }
+            }
+        }
+        if tf02_frame_this_cycle {
+            tf02_no_data = 0;
+        } else if tf02_no_data < 500 {
+            tf02_no_data += 1;
+            if tf02_no_data == 500 {
+                iface.log("WARN:TF02_NO_DATA");
             }
         }
 
