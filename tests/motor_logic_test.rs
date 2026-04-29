@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 // Tests de lógica de motores — x86, sin hardware.
 //
 // Los drivers concretos (L298NMotor, BTS7960Motor) dependen de arduino-hal
@@ -8,8 +8,11 @@
 //   3. Contrato del trait Motor via MockMotor
 //   4. SixWheelRover — control diferencial, stop, giro
 //   5. ErasedMotor — delegación correcta al motor concreto
+//   6. QuadratureEncoder — decode x2 (ambos flancos de A)
+//   7. MotorWithEncoder — counts, delta_counts, reset_encoder
 
-use rover_low_level_controller::motor_control::{Motor, ErasedMotor, SixWheelRover};
+use rover_low_level_controller::motor_control::{Motor, ErasedMotor, SixWheelRover, MotorWithEncoder};
+use rover_low_level_controller::sensors::Encoder;
 
 // ─── MockMotor ───────────────────────────────────────────────────────────────
 
@@ -306,4 +309,118 @@ fn test_erased_motor_in_array() {
     }
     assert_eq!(m1.last_speed, 25);
     assert_eq!(m2.last_speed, 50);
+}
+
+// ─── Helpers: QuadratureEncoder decode ───────────────────────────────────────
+// Replica la fórmula de QuadratureEncoder::on_edge sin depender de AVR.
+// forward = a_high XOR b_high  (convención CW estándar)
+
+fn quadrature_is_forward(a_high: bool, b_high: bool) -> bool {
+    a_high ^ b_high
+}
+
+#[test]
+fn test_quad_rising_a_b_low_is_forward() {
+    // Subida A + B=0 → adelante (A sube antes que B en rotación CW)
+    assert!(quadrature_is_forward(true, false));
+}
+
+#[test]
+fn test_quad_rising_a_b_high_is_backward() {
+    assert!(!quadrature_is_forward(true, true));
+}
+
+#[test]
+fn test_quad_falling_a_b_high_is_forward() {
+    // Bajada A + B=1 → adelante
+    assert!(quadrature_is_forward(false, true));
+}
+
+#[test]
+fn test_quad_falling_a_b_low_is_backward() {
+    assert!(!quadrature_is_forward(false, false));
+}
+
+// ─── MockEncoder ─────────────────────────────────────────────────────────────
+
+use core::sync::atomic::{AtomicI32, Ordering};
+
+struct MockEncoder {
+    counts: AtomicI32,
+}
+
+impl MockEncoder {
+    const fn new_static() -> Self { MockEncoder { counts: AtomicI32::new(0) } }
+    fn add(&self, n: i32) { self.counts.fetch_add(n, Ordering::Relaxed); }
+}
+
+impl Encoder for MockEncoder {
+    fn get_counts(&self) -> i32 { self.counts.load(Ordering::Relaxed) }
+    fn reset(&self)              { self.counts.store(0, Ordering::Relaxed); }
+}
+
+// ─── Tests: MotorWithEncoder ──────────────────────────────────────────────────
+
+static MOCK_ENC_A: MockEncoder = MockEncoder::new_static();
+static MOCK_ENC_B: MockEncoder = MockEncoder::new_static();
+
+#[test]
+fn test_mwe_counts_delegates_to_encoder() {
+    MOCK_ENC_A.reset();
+    MOCK_ENC_A.add(42);
+    let mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
+    assert_eq!(mwe.counts(), 42);
+}
+
+#[test]
+fn test_mwe_delta_counts_accumulates_correctly() {
+    MOCK_ENC_B.reset();
+    let mut mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_B);
+    MOCK_ENC_B.add(10);
+    assert_eq!(mwe.delta_counts(), 10);
+    MOCK_ENC_B.add(5);
+    assert_eq!(mwe.delta_counts(), 5);
+}
+
+#[test]
+fn test_mwe_reset_encoder_zeroes_delta() {
+    MOCK_ENC_B.reset();
+    let mut mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_B);
+    MOCK_ENC_B.add(100);
+    mwe.reset_encoder();
+    assert_eq!(mwe.delta_counts(), 0);
+    assert_eq!(mwe.counts(), 0);
+}
+
+#[test]
+fn test_mwe_implements_motor_set_speed() {
+    MOCK_ENC_A.reset();
+    let mut mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
+    mwe.set_speed(75);
+    // Verificamos via downcast imposible en no-std, pero el motor interno recibió la llamada
+    // — la compilación confirma que Motor está implementado; el test confirma que no panics.
+}
+
+#[test]
+fn test_mwe_implements_motor_stop() {
+    MOCK_ENC_A.reset();
+    let mut mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
+    mwe.set_speed(50);
+    mwe.stop();
+}
+
+#[test]
+fn test_mwe_in_six_wheel_rover_with_plain_motors() {
+    // Escenario real: 4 ruedas con encoder + 2 sin encoder en el mismo SixWheelRover.
+    MOCK_ENC_A.reset();
+    MOCK_ENC_B.reset();
+    let fr = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
+    let fl = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_B);
+    let cr = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
+    let cl = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_B);
+    let rr = MockMotor::new(); // sin encoder
+    let rl = MockMotor::new(); // sin encoder
+    let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
+    rover.set_speeds(60, 60);
+    rover.stop();
 }

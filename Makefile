@@ -13,7 +13,7 @@ FAIL  := \033[31m✗\033[0m
 .PHONY: help setup test-unit test-rust test-hlc \
         flash flash-20a \
         test-sensors test-protocol test-motors test-motors-main calibrate i2c-scan \
-        capture-tlm \
+        capture-tlm monitor \
         int-all clean
 
 # ── Ayuda ────────────────────────────────────────────────
@@ -45,6 +45,7 @@ help:
 	@echo "    make int-all         INT-04b + INT-05 secuencial"
 	@echo ""
 	@printf "  $(BOLD)Captura sigrok$(RESET)\n"
+	@echo "    make monitor         Monitor serial (screen 115200) — Ctrl+A luego k para salir"
 	@echo "    make capture-tlm     FT232H ADBUS0→Mega TX, $(SECONDS)s"
 	@echo ""
 	@echo "  Ejemplo: make flash PORT=/dev/ttyACM0"
@@ -104,6 +105,11 @@ flash-motors-only:
 	  -Zjson-target-spec \
 	  -Zbuild-std=core \
 	  --features no-oc,no-stall,no-lm335,no-hcsr04
+
+monitor:
+	@printf "$(BOLD)>> Monitor serial → $(PORT) @ 115200$(RESET)\n"
+	@printf "  Salir: Ctrl+A luego k\n"
+	screen $(PORT) 115200
 
 # ── Tests con hardware ────────────────────────────────────
 i2c-scan:

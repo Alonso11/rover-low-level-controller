@@ -1,4 +1,4 @@
-// Version: v1.2
+// Version: v1.3
 //! # Módulo de Control de Motores
 //!
 //! Traits `Motor` / `Servo`, `SixWheelRover` y `ErasedMotor` son lógica pura
@@ -45,6 +45,10 @@ pub mod servo;
 /// Type-erased motor wrapper para arrays homogéneos sin heap.
 pub mod erased;
 pub use erased::ErasedMotor;
+
+/// Motor con encoder asociado — mezcla cualquier `Motor` + cualquier `Encoder`.
+pub mod motor_with_encoder;
+pub use motor_with_encoder::MotorWithEncoder;
 
 // ─── SixWheelRover ───────────────────────────────────────────────────────────
 

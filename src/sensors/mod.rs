@@ -1,8 +1,18 @@
-// Version: v1.3
+// Version: v1.4
 //! # Módulo de Sensores
 //!
 //! Este módulo contiene las implementaciones para los diferentes sensores del Rover,
 //! como encoders, sensores de proximidad, IMU, etc.
+
+// ── Traits puros — sin HAL, siempre disponibles (testeables en x86) ──────────
+
+/// Interfaz común para cualquier encoder de posición/velocidad.
+pub trait Encoder {
+    /// Pulsos acumulados desde el último `reset()`.
+    fn get_counts(&self) -> i32;
+    /// Reinicia el contador a cero.
+    fn reset(&self);
+}
 
 // ── Drivers puro Rust (sin HAL) — siempre disponibles, testeables en x86 ────
 /// Módulo para el sensor de corriente ACS712-30A
@@ -46,7 +56,7 @@ pub mod ina226;
 pub mod mpu6050;
 
 #[cfg(feature = "avr")]
-pub use encoder::{Encoder, HallEncoder};
+pub use encoder::{HallEncoder, QuadratureEncoder};
 #[cfg(feature = "avr")]
 pub use hc_sr04::HCSR04;
 #[cfg(feature = "avr")]

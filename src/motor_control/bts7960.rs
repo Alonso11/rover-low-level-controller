@@ -1,4 +1,4 @@
-// Version: v1.1
+// Version: v1.2
 //! Driver para el Puente-H de alta potencia BTS7960 (módulo IBT-2)
 //!
 //! ## Pinout del módulo IBT-2
@@ -24,7 +24,8 @@
 //! Control de dirección:
 //! - Adelante:  RPWM = duty, LPWM = 0
 //! - Atrás:     RPWM = 0,    LPWM = duty
-//! - Stop:      RPWM = 0,    LPWM = 0  (free-wheel / coast)
+//! - Coast:     RPWM = 0,    LPWM = 0  (rueda libre — `stop()`)
+//! - Freno:     RPWM = MAX,  LPWM = MAX (freno activo — `brake()`)
 
 use arduino_hal::hal::port::{Pin, PinOps};
 use arduino_hal::hal::port::mode::{Output, PwmOutput};
@@ -51,7 +52,8 @@ where
     REnPin: PinOps,
     LEnPin: PinOps,
 {
-    /// Crea una nueva instancia y activa ambos canales del IBT-2 (R_EN y L_EN → HIGH).
+    /// Crea una nueva instancia. Por seguridad, el motor arranca DESHABILITADO 
+    /// (R_EN y L_EN en LOW). Llame a `enable()` para activar el driver.
     #[allow(dead_code)]
     pub fn new(
         mut rpwm: Pin<PwmOutput<TC1>, PIN1>,
@@ -62,9 +64,33 @@ where
     ) -> Self {
         rpwm.enable();
         lpwm.enable();
-        r_en.set_high(); // habilitar canal adelante
-        l_en.set_high(); // habilitar canal atrás
+        r_en.set_low();
+        l_en.set_low();
         Self { rpwm, lpwm, r_en, l_en, inverted }
+    }
+
+    /// Habilita el driver activando los pines R_EN y L_EN (HIGH).
+    #[allow(dead_code)]
+    pub fn enable(&mut self) {
+        self.r_en.set_high();
+        self.l_en.set_high();
+    }
+
+    /// Deshabilita el driver (R_EN y L_EN en LOW). 
+    /// Los MOSFETs dejan de conducir inmediatamente (Hi-Z).
+    #[allow(dead_code)]
+    pub fn disable(&mut self) {
+        self.r_en.set_low();
+        self.l_en.set_low();
+    }
+
+    /// Freno activo: ambos canales PWM a duty máximo.
+    /// Más fuerte que `stop()` (coast). Útil en pendientes o paradas de emergencia.
+    #[allow(dead_code)]
+    pub fn brake(&mut self) {
+        let max = self.rpwm.get_max_duty();
+        self.rpwm.set_duty(max);
+        self.lpwm.set_duty(max);
     }
 }
 
@@ -97,7 +123,7 @@ where
         }
     }
 
-    /// Detiene el motor (free-wheel: ambos PWM a 0, EN permanecen HIGH).
+    /// Detiene el motor en coast (rueda libre): ambos PWM a 0, EN permanecen HIGH.
     fn stop(&mut self) {
         self.rpwm.set_duty(0);
         self.lpwm.set_duty(0);
