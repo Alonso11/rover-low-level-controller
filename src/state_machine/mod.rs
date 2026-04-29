@@ -208,9 +208,8 @@ impl MasterStateMachine {
                 self.drive = DriveOutput::STOP;
                 Response::Ack(RoverState::Safe)
             }
-            // BNK:0 (AllOff) siempre permitido — es un corte de emergencia.
             // BNK:2/3/12 bloqueados en FAULT/SAFE hasta RST explícito.
-            Command::BankSelect(BankMode::AllOff) => Response::BankChange(BankMode::AllOff),
+            // BNK:0 (AllOff) ya fue capturado antes del guard — siempre permitido.
             Command::BankSelect(_) if self.state == RoverState::Fault
                                    || self.state == RoverState::Safe => Response::ErrEstop,
             Command::BankSelect(mode) => Response::BankChange(mode),
