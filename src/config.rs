@@ -195,31 +195,38 @@ pub const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2 A (detención inmediata, sa
 
 /// Umbrales de sobrecorriente para driver BTS7960.
 ///
-/// # ADVERTENCIA — Umbrales provisionales sin referencia al motor físico
+/// # Fuente: datasheet NFP-5840-31ZY-EN (microdcmotors.com, 2024)
 ///
-/// El BTS7960 soporta 43 A de pico (Infineon, 2004, *BTS7960B Power Half-Bridge*,
-/// §6.1). Sin embargo, la corriente de stall del motor NFP-5840-31ZY-EN acoplado
-/// al BTS7960 es **desconocida** hasta realizar la medición en campo.
+/// Motor NFP-5840-31ZY-EN — especificaciones eléctricas (todos los ratios de reducción):
 ///
-/// Los valores actuales (15 A FAULT) se eligieron como fracción del rango del
-/// sensor ACS712-20A (< 20 A) para evitar saturación del ADC, NO porque 15 A
-/// sea la corriente de stall del motor. Un motor con corriente de stall de 5 A
-/// podría quemarse sin que FAULT se dispare jamás.
+///   | Tensión | I_no_load | I_rated | I_stall |
+///   |---------|-----------|---------|---------|
+///   | 12 V    |  300 mA   | 1600 mA | 6500 mA |
+///   | 24 V    |  200 mA   | 1200 mA | 4400 mA |
 ///
-/// # Procedimiento de calibración obligatorio antes de usar estos features
-/// 1. Conectar el motor al BTS7960 con el encoder en libre (sin carga mecánica).
-/// 2. Aplicar PWM = 100 % y bloquear el eje manualmente → medir I_stall con
-///    el ACS712. Repetir 3 veces y promediar.
-/// 3. Ajustar:  OC_FAULT_BTS = round(1.25 × I_stall_mA)
-///              OC_LIMIT_BTS = round(0.80 × OC_FAULT_BTS)
-///              OC_WARN_BTS  = round(0.60 × OC_FAULT_BTS)
-///    Ref.: NEMA MG 1-2021, §12.53 — 125 % de corriente nominal como trip de OC.
+/// La corriente de stall es idéntica para todos los ratios (17:1 … 1340:1):
+/// depende del bobinado del motor, no de la reducción mecánica.
+///
+/// Umbral FAULT = 100 % de I_stall (el motor está bloqueado → stop inmediato).
+/// LIMIT = 80 %, WARN = 60 % — misma escala que los umbrales L298N.
+///
+/// El BTS7960 soporta 43 A de pico (Infineon, BTS7960B §6.1), por lo que el
+/// límite de protección lo impone el motor, no el driver.
+///
+/// NOTA: el límite efectivo es el convertidor DC-DC de alimentación (5 A máx.),
+/// no el stall del motor (6.5 A a 12 V). OC_FAULT_BTS = 4800 mA protege el
+/// convertidor con 200 mA de margen antes de su límite de 5 A, y también
+/// detecta stall del motor (I_stall = 6.5 A > 4.8 A → FAULT siempre dispara).
+///
+/// Ref.: microdcmotors.com — NFP-5840-31ZY-EN product page, spec table (2024).
+///   I_stall = 6500 mA @ 12V, I_rated = 1600 mA @ 12V (1340:1, 6 RPM).
+/// Ref.: NEMA MG 1-2021, §12.53 — protección de sobrecorriente ≥ 115 % I_rated.
 #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
-pub const OC_WARN_BTS:  i32 = 8_000;  // PROVISIONAL: ~53 % de 15 A — recalibrar con motor real
+pub const OC_WARN_BTS:  i32 = 2_880; // 60 % de 4800 mA — carga alta
 #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
-pub const OC_LIMIT_BTS: i32 = 12_000; // PROVISIONAL: ~80 % de 15 A — recalibrar con motor real
+pub const OC_LIMIT_BTS: i32 = 3_840; // 80 % de 4800 mA — reducir velocidad
 #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a"))]
-pub const OC_FAULT_BTS: i32 = 15_000; // PROVISIONAL: < 20 A (rango ACS712-20A) — recalibrar
+pub const OC_FAULT_BTS: i32 = 4_800; // 96 % del límite del convertidor (5 A) — stop
 
 /// Umbrales de sobrecorriente por motor `[FR, FL, CR, CL, RR, RL]`.
 /// Seleccionados en tiempo de compilación según el feature activo.
