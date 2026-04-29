@@ -1,4 +1,4 @@
-// Version: v1.4
+// Version: v1.5
 //! # Módulo de Sensores
 //!
 //! Este módulo contiene las implementaciones para los diferentes sensores del Rover,
@@ -45,9 +45,6 @@ pub mod soft_i2c;
 /// Driver para el sensor Time-of-Flight VL53L0X (GY-VL53L0XV2) vía soft I2C
 #[cfg(feature = "avr")]
 pub mod vl53l0x;
-/// Driver para el sensor Time-of-Flight VL6180X (GY-VL6180X) vía soft I2C (reg 16-bit)
-#[cfg(feature = "avr")]
-pub mod vl6180x;
 /// Driver para el monitor de potencia INA226 vía soft I2C (bus compartido con VL53L0X)
 #[cfg(feature = "avr")]
 pub mod ina226;
@@ -63,8 +60,6 @@ pub use hc_sr04::HCSR04;
 pub use tf_luna::TFLuna;
 #[cfg(feature = "avr")]
 pub use vl53l0x::VL53L0X;
-#[cfg(feature = "avr")]
-pub use vl6180x::VL6180X;
 #[cfg(feature = "avr")]
 pub use ina226::INA226;
 #[cfg(feature = "avr")]

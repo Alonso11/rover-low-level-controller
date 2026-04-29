@@ -22,7 +22,7 @@
 //!
 //! ## Frecuencia
 //! Con `delay_us(5)` a 16 MHz → semiperíodo ≈ 5 µs → ~80–100 kHz.
-//! El VL6180X soporta hasta 400 kHz; 100 kHz es suficiente.
+//! El VL53L0X soporta hasta 400 kHz; 100 kHz es suficiente.
 
 use arduino_hal::delay_us;
 
@@ -208,7 +208,7 @@ impl SoftI2C {
         true
     }
 
-    /// Escribe `data` a `reg` (16 bits, MSB primero) — para sensores como VL6180X.
+    /// Escribe `data` a `reg` (16 bits, MSB primero) — para sensores con registro de 16 bits.
     pub fn write16(&self, addr: u8, reg: u16, data: &[u8]) -> bool {
         self.start();
         if !self.write_byte(addr << 1)          { self.stop(); return false; }
@@ -221,7 +221,7 @@ impl SoftI2C {
         true
     }
 
-    /// Lee `buf.len()` bytes desde `reg` (16 bits, MSB primero) — para VL6180X.
+    /// Lee `buf.len()` bytes desde `reg` (16 bits, MSB primero) — para sensores con registro de 16 bits.
     pub fn read16(&self, addr: u8, reg: u16, buf: &mut [u8]) -> bool {
         self.start();
         if !self.write_byte(addr << 1)          { self.stop(); return false; }
