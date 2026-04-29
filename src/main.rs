@@ -1,4 +1,4 @@
-// Version: v2.17
+// Version: v2.18
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -161,9 +161,10 @@ macro_rules! adc_avg {
 /// de pasarlo a la rampa (soft) o aplicarlo directo (hard ya para todo).
 macro_rules! sync_drive {
     // ── Hard stop ──────────────────────────────────────────────────────────
+    // brake_all() usa freno activo en BTS7960 y cae a stop() en L298N.
     (hard, $rover:expr, $msm:expr, $ramp:expr) => {
         $ramp.hard_stop();
-        $rover.stop();
+        $rover.brake_all();
     };
     // ── Soft stop / start ──────────────────────────────────────────────────
     (soft, $rover:expr, $msm:expr, $ramp:expr) => {{
@@ -264,6 +265,7 @@ fn main() -> ! {
     let rr = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4),  pins.d34.into_output(), pins.d35.into_output(), false);
     let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4),  pins.d36.into_output(), pins.d37.into_output(), false);
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
+    rover.enable_all(); // no-op para L298N; activa R_EN/L_EN en BTS7960
 
     // ── Módulo relay 2 canales — D40(IN1/Bank2), D41(IN2/Bank3) ─────────────
     // Active LOW: LOW = relay energizado = banco habilitado.

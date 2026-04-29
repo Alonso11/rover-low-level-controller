@@ -1,4 +1,4 @@
-// Version: v1.2
+// Version: v1.3
 //! Driver para el Puente-H de alta potencia BTS7960 (módulo IBT-2)
 //!
 //! ## Pinout del módulo IBT-2
@@ -69,29 +69,6 @@ where
         Self { rpwm, lpwm, r_en, l_en, inverted }
     }
 
-    /// Habilita el driver activando los pines R_EN y L_EN (HIGH).
-    #[allow(dead_code)]
-    pub fn enable(&mut self) {
-        self.r_en.set_high();
-        self.l_en.set_high();
-    }
-
-    /// Deshabilita el driver (R_EN y L_EN en LOW). 
-    /// Los MOSFETs dejan de conducir inmediatamente (Hi-Z).
-    #[allow(dead_code)]
-    pub fn disable(&mut self) {
-        self.r_en.set_low();
-        self.l_en.set_low();
-    }
-
-    /// Freno activo: ambos canales PWM a duty máximo.
-    /// Más fuerte que `stop()` (coast). Útil en pendientes o paradas de emergencia.
-    #[allow(dead_code)]
-    pub fn brake(&mut self) {
-        let max = self.rpwm.get_max_duty();
-        self.rpwm.set_duty(max);
-        self.lpwm.set_duty(max);
-    }
 }
 
 impl<TC1, PIN1, TC2, PIN2, REnPin, LEnPin> Motor
@@ -127,5 +104,25 @@ where
     fn stop(&mut self) {
         self.rpwm.set_duty(0);
         self.lpwm.set_duty(0);
+    }
+
+    /// Freno activo: ambos PWM a duty máximo. Más fuerte que `stop()` en pendientes.
+    fn brake(&mut self) {
+        let max = self.rpwm.get_max_duty();
+        self.rpwm.set_duty(max);
+        self.lpwm.set_duty(max);
+    }
+
+    /// Habilita el driver (R_EN y L_EN → HIGH).
+    fn enable(&mut self) {
+        self.r_en.set_high();
+        self.l_en.set_high();
+    }
+
+    /// Deshabilita el driver: para primero y baja R_EN y L_EN (Hi-Z).
+    fn disable(&mut self) {
+        self.stop();
+        self.r_en.set_low();
+        self.l_en.set_low();
     }
 }

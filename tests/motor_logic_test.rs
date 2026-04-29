@@ -1,4 +1,4 @@
-// Version: v1.2
+// Version: v1.3
 // Tests de lógica de motores — x86, sin hardware.
 //
 // Los drivers concretos (L298NMotor, BTS7960Motor) dependen de arduino-hal
@@ -6,38 +6,55 @@
 //   1. Aritmética speed → duty cycle (algoritmo común a L298N y BTS7960)
 //   2. Lógica de dirección (flag inverted, signo de velocidad)
 //   3. Contrato del trait Motor via MockMotor
-//   4. SixWheelRover — control diferencial, stop, giro
+//   4. SixWheelRover — control diferencial, stop, giro, brake_all, enable_all
 //   5. ErasedMotor — delegación correcta al motor concreto
 //   6. QuadratureEncoder — decode x2 (ambos flancos de A)
 //   7. MotorWithEncoder — counts, delta_counts, reset_encoder
+//   8. Motor trait defaults — brake() = stop(), enable/disable no-op
 
 use rover_low_level_controller::motor_control::{Motor, ErasedMotor, SixWheelRover, MotorWithEncoder};
 use rover_low_level_controller::sensors::Encoder;
 
 // ─── MockMotor ───────────────────────────────────────────────────────────────
 
-/// Motor de prueba. Registra la última velocidad y si se llamó a stop().
+/// Motor de prueba. Registra la última velocidad y las llamadas a cada método.
 struct MockMotor {
-    last_speed:  i16,
-    stop_called: bool,
-    call_count:  u32,
+    last_speed:    i16,
+    stop_called:   bool,
+    brake_called:  bool,
+    enable_called: bool,
+    disable_called:bool,
+    call_count:    u32,
 }
 
 impl MockMotor {
-    fn new() -> Self { MockMotor { last_speed: 0, stop_called: false, call_count: 0 } }
+    fn new() -> Self {
+        MockMotor {
+            last_speed: 0, stop_called: false, brake_called: false,
+            enable_called: false, disable_called: false, call_count: 0,
+        }
+    }
 }
 
 impl Motor for MockMotor {
     fn set_speed(&mut self, speed: i16) {
-        self.last_speed  = speed;
-        self.stop_called = false;
-        self.call_count += 1;
+        self.last_speed   = speed;
+        self.stop_called  = false;
+        self.brake_called = false;
+        self.call_count  += 1;
     }
     fn stop(&mut self) {
         self.last_speed  = 0;
         self.stop_called = true;
         self.call_count += 1;
     }
+    fn brake(&mut self) {
+        self.last_speed   = 0;
+        self.brake_called = true;
+        self.call_count  += 1;
+    }
+    fn enable(&mut self)  { self.enable_called  = true; }
+    fn disable(&mut self) { self.disable_called = true; }
 }
 
 // ─── Helpers que replican la aritmética interna de L298N / BTS7960 ────────────
@@ -423,4 +440,103 @@ fn test_mwe_in_six_wheel_rover_with_plain_motors() {
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
     rover.set_speeds(60, 60);
     rover.stop();
+}
+
+// ─── Tests: Motor trait defaults ─────────────────────────────────────────────
+
+#[test]
+fn test_motor_brake_default_calls_stop() {
+    // MockMotor overrides brake() explicitly; test via a wrapper that uses the default.
+    struct DefaultBrakeMotor { stop_called: bool }
+    impl Motor for DefaultBrakeMotor {
+        fn set_speed(&mut self, _: i16) {}
+        fn stop(&mut self) { self.stop_called = true; }
+        // brake() not overridden → default calls stop()
+    }
+    let mut m = DefaultBrakeMotor { stop_called: false };
+    m.brake();
+    assert!(m.stop_called, "default brake() must delegate to stop()");
+}
+
+#[test]
+fn test_motor_enable_disable_default_noop() {
+    struct NopMotor;
+    impl Motor for NopMotor {
+        fn set_speed(&mut self, _: i16) {}
+        fn stop(&mut self) {}
+    }
+    let mut m = NopMotor;
+    m.enable();   // must not panic
+    m.disable();  // must not panic
+}
+
+// ─── Tests: SixWheelRover brake_all / enable_all ─────────────────────────────
+
+#[test]
+fn test_rover_brake_all_calls_brake_on_each_motor() {
+    let mut rover = SixWheelRover::new(
+        MockMotor::new(), MockMotor::new(), MockMotor::new(),
+        MockMotor::new(), MockMotor::new(), MockMotor::new(),
+    );
+    rover.frontal_right.set_speed(80);
+    rover.brake_all();
+    assert!(rover.frontal_right.brake_called);
+    assert!(rover.frontal_left.brake_called);
+    assert!(rover.center_right.brake_called);
+    assert!(rover.center_left.brake_called);
+    assert!(rover.rear_right.brake_called);
+    assert!(rover.rear_left.brake_called);
+}
+
+#[test]
+fn test_rover_enable_all_calls_enable_on_each_motor() {
+    let mut rover = SixWheelRover::new(
+        MockMotor::new(), MockMotor::new(), MockMotor::new(),
+        MockMotor::new(), MockMotor::new(), MockMotor::new(),
+    );
+    rover.enable_all();
+    assert!(rover.frontal_right.enable_called);
+    assert!(rover.frontal_left.enable_called);
+    assert!(rover.center_right.enable_called);
+    assert!(rover.center_left.enable_called);
+    assert!(rover.rear_right.enable_called);
+    assert!(rover.rear_left.enable_called);
+}
+
+// ─── Tests: ErasedMotor delegates brake/enable/disable ───────────────────────
+
+static MOCK_ERASED: MockEncoder = MockEncoder::new_static();
+
+#[test]
+fn test_erased_motor_brake_delegates() {
+    let mut m = MockMotor::new();
+    let mut em = unsafe { ErasedMotor::new(&mut m) };
+    em.brake();
+    assert!(m.brake_called);
+}
+
+#[test]
+fn test_erased_motor_enable_delegates() {
+    let mut m = MockMotor::new();
+    let mut em = unsafe { ErasedMotor::new(&mut m) };
+    em.enable();
+    assert!(m.enable_called);
+}
+
+#[test]
+fn test_erased_motor_disable_delegates() {
+    let mut m = MockMotor::new();
+    let mut em = unsafe { ErasedMotor::new(&mut m) };
+    em.disable();
+    assert!(m.disable_called);
+}
+
+// ─── Tests: MotorWithEncoder delegates brake/enable/disable ──────────────────
+
+#[test]
+fn test_mwe_brake_delegates_to_inner_motor() {
+    MOCK_ENC_A.reset();
+    let mut mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
+    mwe.brake();
+    // No direct access to inner motor through MotorWithEncoder — compile + no-panic is the contract.
 }

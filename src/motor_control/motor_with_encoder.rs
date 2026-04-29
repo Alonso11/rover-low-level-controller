@@ -1,4 +1,4 @@
-// Version: v1.0
+// Version: v1.1
 //! Wrapper que combina cualquier `Motor` con cualquier `Encoder`.
 //!
 //! Permite que `SixWheelRover` mezcle motores con y sin encoder sin cambiar
@@ -60,10 +60,9 @@ impl<M: Motor, E: Encoder> MotorWithEncoder<M, E> {
 }
 
 impl<M: Motor, E: Encoder> Motor for MotorWithEncoder<M, E> {
-    fn set_speed(&mut self, speed: i16) {
-        self.motor.set_speed(speed);
-    }
-    fn stop(&mut self) {
-        self.motor.stop();
-    }
+    fn set_speed(&mut self, speed: i16) { self.motor.set_speed(speed); }
+    fn stop(&mut self)                  { self.motor.stop(); }
+    fn brake(&mut self)                 { self.motor.brake(); }
+    fn enable(&mut self)                { self.motor.enable(); }
+    fn disable(&mut self)               { self.motor.disable(); }
 }

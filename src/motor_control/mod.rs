@@ -1,4 +1,4 @@
-// Version: v1.3
+// Version: v1.4
 //! # Módulo de Control de Motores
 //!
 //! Traits `Motor` / `Servo`, `SixWheelRover` y `ErasedMotor` son lógica pura
@@ -16,8 +16,20 @@ pub trait Motor {
     /// `speed`: −100 (retroceso total) … 0 (parado) … 100 (avance total).
     fn set_speed(&mut self, speed: i16);
 
-    /// Detiene el motor inmediatamente.
+    /// Detiene el motor inmediatamente (coast / rueda libre).
     fn stop(&mut self);
+
+    /// Freno activo. Drivers sin freno hardware (ej. L298N) delegan a `stop()`.
+    /// El BTS7960 cortocircuita los terminales del motor para máximo frenado.
+    fn brake(&mut self) { self.stop(); }
+
+    /// Habilita el driver. No-op para drivers siempre activos (ej. L298N).
+    /// Debe llamarse una vez tras `new()` en drivers que arrancan deshabilitados (BTS7960).
+    fn enable(&mut self) {}
+
+    /// Deshabilita el driver (Hi-Z). No-op para drivers siempre activos.
+    /// Llama a `stop()` internamente antes de deshabilitar para evitar back-EMF.
+    fn disable(&mut self) {}
 }
 
 /// Interfaz para servomotores (control de posición angular).
@@ -90,7 +102,7 @@ where
         self.rear_right.set_speed(right_speed);
     }
 
-    /// Detiene los 6 motores simultáneamente.
+    /// Detiene los 6 motores simultáneamente (coast).
     pub fn stop(&mut self) {
         self.frontal_left.stop();
         self.center_left.stop();
@@ -98,5 +110,26 @@ where
         self.frontal_right.stop();
         self.center_right.stop();
         self.rear_right.stop();
+    }
+
+    /// Freno activo en los 6 motores. En L298N equivale a `stop()`; en BTS7960
+    /// cortocircuita los terminales para máximo frenado (útil en modo CLB).
+    pub fn brake_all(&mut self) {
+        self.frontal_left.brake();
+        self.center_left.brake();
+        self.rear_left.brake();
+        self.frontal_right.brake();
+        self.center_right.brake();
+        self.rear_right.brake();
+    }
+
+    /// Habilita los 6 drivers. Necesario tras `new()` para BTS7960; no-op para L298N.
+    pub fn enable_all(&mut self) {
+        self.frontal_left.enable();
+        self.center_left.enable();
+        self.rear_left.enable();
+        self.frontal_right.enable();
+        self.center_right.enable();
+        self.rear_right.enable();
     }
 }
