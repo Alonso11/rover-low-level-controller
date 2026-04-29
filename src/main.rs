@@ -1,4 +1,4 @@
-// Version: v2.19
+// Version: v2.20
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -14,8 +14,11 @@
 //!
 //! ## Asignación de pines:
 //!   - USART0 (USB) @ 115200 → RPi5 / PC
-//!   - Timer2 D9(FR) D10(FL) | Timer3 D5(CR) | Timer4 D6(CL) D7(RR) D8(RL)
-//!   - Dirección motores: D22–D25, D28–D31, D34–D37
+//!   - Timer2 D9(FR/RPWM) D10(FL/RPWM)
+//!   - Timer3 D5(CR/RPWM) | Timer4 D6(CL/RPWM) D7(RR/RPWM) D8(RL/RPWM)
+//!   - [mixed-drivers] Timer1 D11(CR/LPWM) D12(CL/LPWM) D13(RR/LPWM)
+//!                     Timer0 D4(RL/LPWM)
+//!   - EN/Dirección: D22–D25 (FR/FL L298N) | D28–D31, D34–D37 (CR–RL EN)
 //!   - HC-SR04: D38(Trigger) D39(Echo)
 //!   - VL53L0X: D42(SDA/PL7) D43(SCL/PL6) - soft I2C, avoids TWI conflict
 //!   - Encoders fase A: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
@@ -43,8 +46,12 @@
 
 use panic_halt as _;
 use arduino_hal::simple_pwm::{IntoPwmPin, Prescaler, Timer2Pwm, Timer3Pwm, Timer4Pwm};
+#[cfg(feature = "mixed-drivers")]
+use arduino_hal::simple_pwm::{Timer0Pwm, Timer1Pwm};
 use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuffer};
 use rover_low_level_controller::motor_control::l298n::L298NMotor;
+#[cfg(feature = "mixed-drivers")]
+use rover_low_level_controller::motor_control::bts7960::BTS7960Motor;
 use rover_low_level_controller::motor_control::SixWheelRover;
 use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
@@ -297,13 +304,40 @@ fn main() -> ! {
     let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64);
     let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64);
 
-    // ── 6 Motores — layout verificado en control_6_motors_l298n.rs v3.0 ─────
+    // ── 6 Motores ────────────────────────────────────────────────────────────
+    // FR y FL siempre L298N (módulos frontales sin cambio de driver).
     let fr = L298NMotor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d23.into_output(), pins.d25.into_output(), false);
     let fl = L298NMotor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d22.into_output(), pins.d24.into_output(), false);
-    let cr = L298NMotor::new(pins.d5.into_output().into_pwm(&mut timer3),  pins.d28.into_output(), pins.d29.into_output(), false);
-    let cl = L298NMotor::new(pins.d6.into_output().into_pwm(&mut timer4),  pins.d30.into_output(), pins.d31.into_output(), false);
-    let rr = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4),  pins.d34.into_output(), pins.d35.into_output(), false);
-    let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4),  pins.d36.into_output(), pins.d37.into_output(), false);
+
+    // CR/CL/RR/RL: L298N por defecto; BTS7960 IBT-2 con feature "mixed-drivers".
+    // BTS7960: RPWM = PWM existente, LPWM = nuevo pin, R_EN/L_EN = pines de dirección reutilizados.
+    //   CR: RPWM=D5(OC3A/Timer3)  LPWM=D11(OC1A/Timer1) R_EN=D28 L_EN=D29
+    //   CL: RPWM=D6(OC4A/Timer4)  LPWM=D12(OC1B/Timer1) R_EN=D30 L_EN=D31
+    //   RR: RPWM=D7(OC4B/Timer4)  LPWM=D13(OC1C/Timer1) R_EN=D34 L_EN=D35
+    //   RL: RPWM=D8(OC4C/Timer4)  LPWM=D4 (OC0B/Timer0) R_EN=D36 L_EN=D37
+    #[cfg(feature = "mixed-drivers")]
+    let mut timer1 = Timer1Pwm::new(dp.TC1, Prescaler::Prescale64);
+    #[cfg(feature = "mixed-drivers")]
+    let mut timer0 = Timer0Pwm::new(dp.TC0, Prescaler::Prescale64);
+
+    #[cfg(not(feature = "mixed-drivers"))]
+    let cr = L298NMotor::new(pins.d5.into_output().into_pwm(&mut timer3), pins.d28.into_output(), pins.d29.into_output(), false);
+    #[cfg(not(feature = "mixed-drivers"))]
+    let cl = L298NMotor::new(pins.d6.into_output().into_pwm(&mut timer4), pins.d30.into_output(), pins.d31.into_output(), false);
+    #[cfg(not(feature = "mixed-drivers"))]
+    let rr = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4), pins.d34.into_output(), pins.d35.into_output(), false);
+    #[cfg(not(feature = "mixed-drivers"))]
+    let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4), pins.d36.into_output(), pins.d37.into_output(), false);
+
+    #[cfg(feature = "mixed-drivers")]
+    let cr = BTS7960Motor::new(pins.d5.into_output().into_pwm(&mut timer3), pins.d11.into_output().into_pwm(&mut timer1), pins.d28.into_output(), pins.d29.into_output(), false);
+    #[cfg(feature = "mixed-drivers")]
+    let cl = BTS7960Motor::new(pins.d6.into_output().into_pwm(&mut timer4), pins.d12.into_output().into_pwm(&mut timer1), pins.d30.into_output(), pins.d31.into_output(), false);
+    #[cfg(feature = "mixed-drivers")]
+    let rr = BTS7960Motor::new(pins.d7.into_output().into_pwm(&mut timer4), pins.d13.into_output().into_pwm(&mut timer1), pins.d34.into_output(), pins.d35.into_output(), false);
+    #[cfg(feature = "mixed-drivers")]
+    let rl = BTS7960Motor::new(pins.d8.into_output().into_pwm(&mut timer4), pins.d4.into_output().into_pwm(&mut timer0),  pins.d36.into_output(), pins.d37.into_output(), false);
+
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
     rover.enable_all(); // no-op para L298N; activa R_EN/L_EN en BTS7960
 
@@ -517,7 +551,10 @@ fn main() -> ! {
     let mut tf02_sig_logged: bool = false;
 
     iface.log(read_reset_cause());
-    iface.log("=== ROVER OLYMPUS v2.17 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB ===");
+    #[cfg(feature = "mixed-drivers")]
+    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [mixed-drivers: FR/FL=L298N CR/CL/RR/RL=BTS7960] ===");
+    #[cfg(not(feature = "mixed-drivers"))]
+    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [all-l298n] ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {

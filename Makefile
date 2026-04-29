@@ -88,6 +88,15 @@ flash-20a:
 	  -Zbuild-std=core \
 	  --features all-20a
 
+flash-mixed:
+	@printf "$(BOLD)>> Flash LLC → $(PORT) [FR/FL=L298N  CR/CL/RR/RL=BTS7960]$(RESET)\n"
+	RAVEDUDE_PORT=$(PORT) \
+	RUSTFLAGS="-C target-cpu=atmega2560" \
+	cargo +nightly run --release \
+	  -Zjson-target-spec \
+	  -Zbuild-std=core \
+	  --features mixed-drivers
+
 flash-no-oc:
 	@printf "$(BOLD)>> Flash LLC → $(PORT) [OC DESACTIVADO — solo pruebas HW]$(RESET)\n"
 	RAVEDUDE_PORT=$(PORT) \
