@@ -62,6 +62,8 @@ pub use erased::ErasedMotor;
 pub mod motor_with_encoder;
 pub use motor_with_encoder::MotorWithEncoder;
 
+use crate::config::MIN_MOTOR_SPEED;
+
 // ─── SixWheelRover ───────────────────────────────────────────────────────────
 
 /// Chasis diferencial de 6 ruedas. Genérico sobre cualquier implementación de `Motor`.
@@ -93,13 +95,18 @@ where
 
     /// Control diferencial (tanque): aplica `left_speed` a los 3 motores izquierdos
     /// y `right_speed` a los 3 derechos.
+    ///
+    /// Aplica dead-band: velocidades con |speed| < MIN_MOTOR_SPEED se convierten a 0
+    /// para evitar energizar el motor sin que supere la fricción estática.
     pub fn set_speeds(&mut self, left_speed: i16, right_speed: i16) {
-        self.frontal_left.set_speed(left_speed);
-        self.center_left.set_speed(left_speed);
-        self.rear_left.set_speed(left_speed);
-        self.frontal_right.set_speed(right_speed);
-        self.center_right.set_speed(right_speed);
-        self.rear_right.set_speed(right_speed);
+        let l = if left_speed.abs()  < MIN_MOTOR_SPEED { 0 } else { left_speed };
+        let r = if right_speed.abs() < MIN_MOTOR_SPEED { 0 } else { right_speed };
+        self.frontal_left.set_speed(l);
+        self.center_left.set_speed(l);
+        self.rear_left.set_speed(l);
+        self.frontal_right.set_speed(r);
+        self.center_right.set_speed(r);
+        self.rear_right.set_speed(r);
     }
 
     /// Detiene los 6 motores simultáneamente (coast).

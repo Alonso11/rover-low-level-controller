@@ -1,4 +1,4 @@
-// Version: v1.3
+// Version: v1.4
 // Tests de lógica de motores — x86, sin hardware.
 //
 // Los drivers concretos (L298NMotor, BTS7960Motor) dependen de arduino-hal
@@ -11,9 +11,11 @@
 //   6. QuadratureEncoder — decode x2 (ambos flancos de A)
 //   7. MotorWithEncoder — counts, delta_counts, reset_encoder
 //   8. Motor trait defaults — brake() = stop(), enable/disable no-op
+//   9. Dead-band: set_speeds descarta velocidades < MIN_MOTOR_SPEED
 
 use rover_low_level_controller::motor_control::{Motor, ErasedMotor, SixWheelRover, MotorWithEncoder};
 use rover_low_level_controller::sensors::Encoder;
+use rover_low_level_controller::config::MIN_MOTOR_SPEED;
 
 // ─── MockMotor ───────────────────────────────────────────────────────────────
 
@@ -539,4 +541,34 @@ fn test_mwe_brake_delegates_to_inner_motor() {
     let mut mwe = MotorWithEncoder::new(MockMotor::new(), &MOCK_ENC_A);
     mwe.brake();
     // No direct access to inner motor through MotorWithEncoder — compile + no-panic is the contract.
+}
+
+// ─── Tests: dead-band en set_speeds ──────────────────────────────────────────
+
+#[test]
+fn test_deadband_below_min_clamps_to_zero() {
+    let mut rover = make_rover();
+    rover.set_speeds(MIN_MOTOR_SPEED - 1, MIN_MOTOR_SPEED - 1);
+    assert_eq!(rover.frontal_left.last_speed,  0);
+    assert_eq!(rover.center_left.last_speed,   0);
+    assert_eq!(rover.rear_left.last_speed,     0);
+    assert_eq!(rover.frontal_right.last_speed, 0);
+    assert_eq!(rover.center_right.last_speed,  0);
+    assert_eq!(rover.rear_right.last_speed,    0);
+}
+
+#[test]
+fn test_deadband_at_min_passes_through() {
+    let mut rover = make_rover();
+    rover.set_speeds(MIN_MOTOR_SPEED, -MIN_MOTOR_SPEED);
+    assert_eq!(rover.frontal_left.last_speed,   MIN_MOTOR_SPEED);
+    assert_eq!(rover.frontal_right.last_speed, -MIN_MOTOR_SPEED);
+}
+
+#[test]
+fn test_deadband_above_min_unchanged() {
+    let mut rover = make_rover();
+    rover.set_speeds(80, -60);
+    assert_eq!(rover.frontal_left.last_speed,   80);
+    assert_eq!(rover.frontal_right.last_speed, -60);
 }

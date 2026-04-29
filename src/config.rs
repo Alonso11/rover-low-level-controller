@@ -162,6 +162,11 @@ pub const INA226_SHUNT_MOHM: u16 = 10;
 
 // ─── Protección de corriente ─────────────────────────────────────────────────
 
+/// Velocidad mínima efectiva del motor (%). Comandos con |speed| < MIN_MOTOR_SPEED
+/// se descartan (→ 0) para no energizar el motor sin que gire (dead-band de fricción).
+/// CALIBRAR: medir duty mínimo para vencer fricción estática con el rover cargado.
+pub const MIN_MOTOR_SPEED: i16 = 15;
+
 /// Velocidad máxima (%) aplicada a todos los motores cuando `safety == Limit`.
 pub const LIMIT_SPEED_CAP: i16 = 60;
 
