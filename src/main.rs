@@ -1,4 +1,4 @@
-// Version: v2.18
+// Version: v2.19
 //! # Firmware Principal — Rover Olympus / Arduino Mega 2560
 //!
 //! ## Loop principal (20 ms / ciclo):
@@ -15,19 +15,26 @@
 //! ## Asignación de pines:
 //!   - USART0 (USB) @ 115200 → RPi5 / PC
 //!   - Timer2 D9(FR) D10(FL) | Timer3 D5(CR) | Timer4 D6(CL) D7(RR) D8(RL)
-//!   - Dirección motores: D22–D37
+//!   - Dirección motores: D22–D25, D28–D31, D34–D37
 //!   - HC-SR04: D38(Trigger) D39(Echo)
 //!   - VL53L0X: D42(SDA/PL7) D43(SCL/PL6) - soft I2C, avoids TWI conflict
-//!   - Encoders: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
-//!               D2(INT4/RR) D3(INT5/RL)
+//!   - Encoders fase A: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
+//!                      D2(INT4/RR) D3(INT5/RL)
+//!   - Encoders fase B: D44(PL5/FR) D45(PL4/FL) D46(PL3/CR)
+//!                      D47(PL2/CL) D48(PL1/RR) D49(PL0/RL) — pull-up, Port L
 //!   - ACS712-30A: A0(FR) A1(FL) A2(CR) A3(CL) A4(RR) A5(RL)
 //!   - LM335:      A6
 //!
 //! ## Diseño de encoders:
-//!   Los 6 HallEncoders son `static` para ser accesibles desde las ISRs.
-//!   Cada ISR llama `pulse()` en rising edge. El loop principal lee los
-//!   contadores y detecta stall si no cambian durante STALL_THRESHOLD ciclos
-//!   mientras la velocidad supera STALL_SPEED_MIN.
+//!   Los 6 QuadratureEncoders son `static` para ser accesibles desde las ISRs.
+//!   Motor NFP-5840-31ZY-EN: encoder diferencial 6 cables (A, A', B, B', VCC, GND).
+//!   Se usan A y B; A' y B' (señales complementarias) quedan sin conectar.
+//!   Cada ISR se dispara en CUALQUIER flanco de A (EICRA=0x55, EICRB=0x05),
+//!   lee el estado instantáneo de A (PINx) y B (PINL) y llama on_edge(a, b).
+//!   Decodificación x2: forward = a_high XOR b_high.
+//!   El loop principal lee los contadores (signed: + adelante, - atrás) y
+//!   detecta stall si no cambian durante STALL_THRESHOLD ciclos mientras la
+//!   velocidad supera STALL_SPEED_MIN.
 //!   Ver consideration_implementation.md §6 para la decisión de diseño.
 
 #![no_std]
@@ -41,7 +48,7 @@ use rover_low_level_controller::motor_control::l298n::L298NMotor;
 use rover_low_level_controller::motor_control::SixWheelRover;
 use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
-use rover_low_level_controller::sensors::encoder::{HallEncoder, Encoder};
+use rover_low_level_controller::sensors::{QuadratureEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, TF02, check_temp_c};
 use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
 use rover_low_level_controller::ramp::DriveRamp;
@@ -56,39 +63,72 @@ use rover_low_level_controller::state_machine::{
 // ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
 //
 // Orden del stall_mask (bit N = motor N):
-//   bit 0 = Front Right  (INT0 / D21)
-//   bit 1 = Front Left   (INT1 / D20)
-//   bit 2 = Center Right (INT2 / D19) ← libre gracias a USART3 para RPi
-//   bit 3 = Center Left  (INT3 / D18) ← libre gracias a USART3 para RPi
-//   bit 4 = Rear Right   (INT4 / D2)
-//   bit 5 = Rear Left    (INT5 / D3)
+//   bit 0 = Front Right  (INT0 / D21 fase A, D44/PL5 fase B)
+//   bit 1 = Front Left   (INT1 / D20 fase A, D45/PL4 fase B)
+//   bit 2 = Center Right (INT2 / D19 fase A, D46/PL3 fase B)
+//   bit 3 = Center Left  (INT3 / D18 fase A, D47/PL2 fase B)
+//   bit 4 = Rear Right   (INT4 / D2  fase A, D48/PL1 fase B)
+//   bit 5 = Rear Left    (INT5 / D3  fase A, D49/PL0 fase B)
 
-static ENCODER_FR: HallEncoder = HallEncoder::new(); // Front Right  — INT0, D21
-static ENCODER_FL: HallEncoder = HallEncoder::new(); // Front Left   — INT1, D20
-static ENCODER_CR: HallEncoder = HallEncoder::new(); // Center Right — INT2, D19
-static ENCODER_CL: HallEncoder = HallEncoder::new(); // Center Left  — INT3, D18
-static ENCODER_RR: HallEncoder = HallEncoder::new(); // Rear Right   — INT4, D2
-static ENCODER_RL: HallEncoder = HallEncoder::new(); // Rear Left    — INT5, D3
+static ENCODER_FR: QuadratureEncoder = QuadratureEncoder::new(); // FR — INT0/D21, B=D44/PL5
+static ENCODER_FL: QuadratureEncoder = QuadratureEncoder::new(); // FL — INT1/D20, B=D45/PL4
+static ENCODER_CR: QuadratureEncoder = QuadratureEncoder::new(); // CR — INT2/D19, B=D46/PL3
+static ENCODER_CL: QuadratureEncoder = QuadratureEncoder::new(); // CL — INT3/D18, B=D47/PL2
+static ENCODER_RR: QuadratureEncoder = QuadratureEncoder::new(); // RR — INT4/D2,  B=D48/PL1
+static ENCODER_RL: QuadratureEncoder = QuadratureEncoder::new(); // RL — INT5/D3,  B=D49/PL0
 
-// ─── ISRs — rising edge en Fase A de cada encoder ────────────────────────────
+// ─── Registros AVR para las ISRs de encoders ─────────────────────────────────
+//
+// Fase A: INT0–INT3 en Port D (PD0–PD3), INT4–INT5 en Port E (PE4–PE5).
+// Fase B: todos en Port L (PL5–PL0), un solo read de PINL cubre los 6 encoders.
+// Direcciones de data memory (= I/O address + 0x20 para puertos clásicos).
+const PIND_ADDR: *const u8 = 0x29 as *const u8; // Port D input: D18=PD3, D19=PD2, D20=PD1, D21=PD0
+const PINE_ADDR: *const u8 = 0x2C as *const u8; // Port E input: D2=PE4, D3=PE5
+const PINL_ADDR: *const u8 = 0x109 as *const u8; // Port L input: D44=PL5…D49=PL0
 
-#[avr_device::interrupt(atmega2560)]
-fn INT0() { ENCODER_FR.pulse(); }
-
-#[avr_device::interrupt(atmega2560)]
-fn INT1() { ENCODER_FL.pulse(); }
-
-#[avr_device::interrupt(atmega2560)]
-fn INT2() { ENCODER_CR.pulse(); }
-
-#[avr_device::interrupt(atmega2560)]
-fn INT3() { ENCODER_CL.pulse(); }
+// ─── ISRs — any edge en Fase A (EICRA=0x55, EICRB=0x05) ─────────────────────
 
 #[avr_device::interrupt(atmega2560)]
-fn INT4() { ENCODER_RR.pulse(); }
+fn INT0() {
+    let pind = unsafe { core::ptr::read_volatile(PIND_ADDR) };
+    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
+    ENCODER_FR.on_edge((pind & (1 << 0)) != 0, (pinl & (1 << 5)) != 0);
+}
 
 #[avr_device::interrupt(atmega2560)]
-fn INT5() { ENCODER_RL.pulse(); }
+fn INT1() {
+    let pind = unsafe { core::ptr::read_volatile(PIND_ADDR) };
+    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
+    ENCODER_FL.on_edge((pind & (1 << 1)) != 0, (pinl & (1 << 4)) != 0);
+}
+
+#[avr_device::interrupt(atmega2560)]
+fn INT2() {
+    let pind = unsafe { core::ptr::read_volatile(PIND_ADDR) };
+    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
+    ENCODER_CR.on_edge((pind & (1 << 2)) != 0, (pinl & (1 << 3)) != 0);
+}
+
+#[avr_device::interrupt(atmega2560)]
+fn INT3() {
+    let pind = unsafe { core::ptr::read_volatile(PIND_ADDR) };
+    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
+    ENCODER_CL.on_edge((pind & (1 << 3)) != 0, (pinl & (1 << 2)) != 0);
+}
+
+#[avr_device::interrupt(atmega2560)]
+fn INT4() {
+    let pine = unsafe { core::ptr::read_volatile(PINE_ADDR) };
+    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
+    ENCODER_RR.on_edge((pine & (1 << 4)) != 0, (pinl & (1 << 1)) != 0);
+}
+
+#[avr_device::interrupt(atmega2560)]
+fn INT5() {
+    let pine = unsafe { core::ptr::read_volatile(PINE_ADDR) };
+    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
+    ENCODER_RL.on_edge((pine & (1 << 5)) != 0, (pinl & (1 << 0)) != 0);
+}
 
 // ─── Ring buffer USART RX (interrupt-driven) ─────────────────────────────────
 //
@@ -267,6 +307,17 @@ fn main() -> ! {
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
     rover.enable_all(); // no-op para L298N; activa R_EN/L_EN en BTS7960
 
+    // ── Encoders fase B — D44–D49 (Port L bits 5–0), pull-up interno ────────
+    // NFP-5840-31ZY-EN: encoder diferencial 6 cables. Se usan A y B;
+    // A' y B' (señales complementarias) quedan sin conectar al Mega.
+    // Pull-up interno de 20–50 kΩ a 5V — compatible con salida open-collector.
+    let _enc_fr_b = pins.d44.into_pull_up_input(); // PL5 — FR fase B
+    let _enc_fl_b = pins.d45.into_pull_up_input(); // PL4 — FL fase B
+    let _enc_cr_b = pins.d46.into_pull_up_input(); // PL3 — CR fase B
+    let _enc_cl_b = pins.d47.into_pull_up_input(); // PL2 — CL fase B
+    let _enc_rr_b = pins.d48.into_pull_up_input(); // PL1 — RR fase B
+    let _enc_rl_b = pins.d49.into_pull_up_input(); // PL0 — RL fase B
+
     // ── Módulo relay 2 canales — D40(IN1/Bank2), D41(IN2/Bank3) ─────────────
     // Active LOW: LOW = relay energizado = banco habilitado.
     // Arranca con Bank 2 activo, Bank 3 en espera.
@@ -425,12 +476,14 @@ fn main() -> ! {
     // offset 0 — calibrar con .calibrate(offset_c) tras verificación en hardware.
     let ntc_batt: [NTCThermistor; 6] = [NTCThermistor::new(); 6];
 
-    // ── Interrupciones externas INT0–INT5 (rising edge) ──────────────────────
-    // EICRA: controla INT0–INT3 (ISCn1=1, ISCn0=1 → rising edge)
-    // EICRB: controla INT4–INT5 (ISCn1=1, ISCn0=1 → rising edge)
+    // ── Interrupciones externas INT0–INT5 (any edge) ─────────────────────────
+    // QuadratureEncoder requiere ambos flancos de A para decodificación x2.
+    // ISCn1=0, ISCn0=1 → any logical change (flanco de subida Y bajada).
+    // EICRA 0x55 = 01010101: any-edge para INT0–INT3
+    // EICRB 0x05 = 00000101: any-edge para INT4–INT5
     // EIMSK: habilita INT0–INT5 (bits 0–5)
-    dp.EXINT.eicra().write(|w| unsafe { w.bits(0xFF) });
-    dp.EXINT.eicrb().write(|w| unsafe { w.bits(0x0F) });
+    dp.EXINT.eicra().write(|w| unsafe { w.bits(0x55) });
+    dp.EXINT.eicrb().write(|w| unsafe { w.bits(0x05) });
     dp.EXINT.eimsk().write(|w| unsafe { w.bits(0x3F) });
     unsafe { avr_device::interrupt::enable() };
 
