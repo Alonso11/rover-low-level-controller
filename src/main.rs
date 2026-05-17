@@ -56,7 +56,7 @@ use rover_low_level_controller::motor_control::SixWheelRover;
 use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::{QuadratureEncoder, Encoder};
-use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA226, TF02, check_temp_c};
+use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA3221, TF02, check_temp_c};
 use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
 use rover_low_level_controller::ramp::DriveRamp;
 use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
@@ -382,16 +382,18 @@ fn main() -> ! {
         iface.log("WARN:TOF_FAIL");
     }
 
-    // ── INA226 — D42(SDA/PL7), D43(SCL/PL6), dirección 0x40 ────────────────
-    // Comparte el bus soft I2C con VL53L0X (0x29). Sin conflicto de dirección.
-    // Requiere shunt externo de INA226_SHUNT_MOHM mΩ en serie con la batería.
-    // WARN si falla: el monitoreo de batería (batt_mv/batt_ma) queda deshabilitado
-    // y la protección LLC-level de batería baja (< 12 V) no opera.
-    let mut ina = INA226::new();
-    if ina.init(INA226_SHUNT_MOHM) {
-        iface.log("INFO:INA226_OK");
+    // ── INA3221 — D42(SDA/PL7), D43(SCL/PL6), dirección 0x40 ───────────────
+    // Triple-canal en modo bus-only para los 3 bancos de batería. IN+n/IN-n
+    // de cada canal van AMBOS al (+) del banco n → el chip NO ve la corriente
+    // de los motores (shunt on-board en 0 V, sin disipación). Solo voltaje.
+    // Comparte el bus soft I2C con VL53L0X (0x29) y MPU-6050 (0x68).
+    // WARN si falla: batt_mv queda en 0 y la protección LLC-level de batería
+    // baja (< 12 V) no opera; el HLC debe asumir el rol vía TLM.
+    let mut ina = INA3221::new();
+    if ina.init() {
+        iface.log("INFO:INA3221_OK");
     } else {
-        iface.log("WARN:INA226_FAIL");
+        iface.log("WARN:INA3221_FAIL");
     }
     // I2C bus scan — diagnóstico (eliminar después de validar hardware)
     {
@@ -552,9 +554,9 @@ fn main() -> ! {
 
     iface.log(read_reset_cause());
     #[cfg(feature = "mixed-drivers")]
-    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [mixed-drivers: FR/FL=L298N CR/CL/RR/RL=BTS7960] ===");
+    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA3221 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [mixed-drivers: FR/FL=L298N CR/CL/RR/RL=BTS7960] ===");
     #[cfg(not(feature = "mixed-drivers"))]
-    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA226 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [all-l298n] ===");
+    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA3221 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [all-l298n] ===");
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
@@ -840,10 +842,13 @@ fn main() -> ! {
                 }
             }
 
-            // INA226 — tensión y corriente total de batería
+            // INA3221 — voltaje de los 3 bancos (modo bus-only, sin corriente).
+            // batt_mv reporta el mínimo de los 3 para que la protección de batería
+            // baja dispare si cualquier banco está descargado.
             if ina.ready {
-                sensor_frame.batt_mv = ina.read_bus_mv();
-                sensor_frame.batt_ma = ina.read_current_ma();
+                let [v_b1, v_b2, v_b3] = ina.read_all_mv();
+                sensor_frame.batt_mv = v_b1.min(v_b2).min(v_b3);
+                sensor_frame.batt_ma = 0; // modo bus-only: no medimos corriente
             // Protección de batería baja (EPS-REQ-002 / SYS-FUN-040a):
             // Si el INA226 lee < 12 V (con lectura válida > 5 V para descartar
             // el arranque en frío), el LLC entra en Safe Mode directamente sin
