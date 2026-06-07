@@ -16,15 +16,19 @@
 //!   - USART0 (USB) @ 115200 → RPi5 / PC
 //!   - Timer2 D9(FR/RPWM) D10(FL/RPWM)
 //!   - Timer3 D5(CR/RPWM) | Timer4 D6(CL/RPWM) D7(RR/RPWM) D8(RL/RPWM)
-//!   - [mixed-drivers] Timer1 D11(CR/LPWM) D12(CL/LPWM) D13(RR/LPWM)
-//!                     Timer0 D4(RL/LPWM)
-//!   - EN/Dirección: D22–D25 (FR/FL L298N) | D28–D31, D34–D37 (CR–RL EN)
+//!   - [mixed-drivers/all-bts7960] Timer1 D12(CR/LPWM) D11(CL/LPWM) D13(RR/LPWM)  (CR/CL LPWM+EN intercambiados, bringup 2026-05-31)
+//!                                 Timer0 D4(RL/LPWM)
+//!   - [all-bts7960]               Timer5 D44(FR/LPWM/OC5C) D45(FL/LPWM/OC5B)
+//!   - EN/Dirección: D22–D25 (FR/FL L298N IN1/IN2  ó  BTS R_EN/L_EN bajo all-bts7960)
+//!                   D28–D31, D34–D37 (CR–RL EN)
 //!   - HC-SR04: D38(Trigger) D39(Echo)
 //!   - VL53L0X: D42(SDA/PL7) D43(SCL/PL6) - soft I2C, avoids TWI conflict
 //!   - Encoders fase A: D21(INT0/FR) D20(INT1/FL) D19(INT2/CR) D18(INT3/CL)
 //!                      D2(INT4/RR) D3(INT5/RL)
-//!   - Encoders fase B: D44(PL5/FR) D45(PL4/FL) D46(PL3/CR)
-//!                      D47(PL2/CL) D48(PL1/RR) D49(PL0/RL) — pull-up, Port L
+//!   - Encoders fase B (default/mixed): D44(PL5/FR) D45(PL4/FL) D46(PL3/CR)
+//!                                      D47(PL2/CL) D48(PL1/RR) D49(PL0/RL) — Port L pull-up
+//!   - Encoders fase B (all-bts7960):   A13(PK5/FR) A14(PK6/FL) — Port K pull-up
+//!                                      D46–D49 idénticos al modo mixed para CR/CL/RR/RL
 //!   - ACS712-30A: A0(FR) A1(FL) A2(CR) A3(CL) A4(RR) A5(RL)
 //!   - LM335:      A6
 //!
@@ -33,7 +37,8 @@
 //!   Motor NFP-5840-31ZY-EN: encoder diferencial 6 cables (A, A', B, B', VCC, GND).
 //!   Se usan A y B; A' y B' (señales complementarias) quedan sin conectar.
 //!   Cada ISR se dispara en CUALQUIER flanco de A (EICRA=0x55, EICRB=0x05),
-//!   lee el estado instantáneo de A (PINx) y B (PINL) y llama on_edge(a, b).
+//!   lee el estado instantáneo de A (PINx) y B (PINL ó PINK bajo all-bts7960
+//!   para FR/FL) y llama on_edge(a, b).
 //!   Decodificación x2: forward = a_high XOR b_high.
 //!   El loop principal lee los contadores (signed: + adelante, - atrás) y
 //!   detecta stall si no cambian durante STALL_THRESHOLD ciclos mientras la
@@ -46,19 +51,24 @@
 
 use panic_halt as _;
 use arduino_hal::simple_pwm::{IntoPwmPin, Prescaler, Timer2Pwm, Timer3Pwm, Timer4Pwm};
-#[cfg(feature = "mixed-drivers")]
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
 use arduino_hal::simple_pwm::{Timer0Pwm, Timer1Pwm};
+#[cfg(feature = "all-bts7960")]
+use arduino_hal::simple_pwm::Timer5Pwm;
 use rover_low_level_controller::command_interface::{CommandInterface, RxRingBuffer};
+#[cfg(any(not(feature = "all-bts7960"), feature = "rl-l298n"))]
 use rover_low_level_controller::motor_control::l298n::L298NMotor;
-#[cfg(feature = "mixed-drivers")]
+#[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
 use rover_low_level_controller::motor_control::bts7960::BTS7960Motor;
 use rover_low_level_controller::motor_control::SixWheelRover;
 use rover_low_level_controller::config::*;
 use rover_low_level_controller::sensors::hc_sr04::HCSR04;
 use rover_low_level_controller::sensors::{QuadratureEncoder, Encoder};
 use rover_low_level_controller::sensors::{ACS712, LM335, NTCThermistor, VL53L0X, INA3221, TF02, check_temp_c};
+#[cfg(not(feature = "no-mpu"))]
 use rover_low_level_controller::sensors::mpu6050::{MPU6050, ACCEL_SCALE, GYRO_SCALE};
 use rover_low_level_controller::ramp::DriveRamp;
+#[cfg(not(feature = "no-mpu"))]
 use rover_low_level_controller::ekf::{EkfState, predict, update_gyro};
 use rover_low_level_controller::relay::RelayModule;
 use arduino_hal::prelude::*;
@@ -70,15 +80,15 @@ use rover_low_level_controller::state_machine::{
 // ─── Encoders estáticos (accesibles desde ISRs) ───────────────────────────────
 //
 // Orden del stall_mask (bit N = motor N):
-//   bit 0 = Front Right  (INT0 / D21 fase A, D44/PL5 fase B)
-//   bit 1 = Front Left   (INT1 / D20 fase A, D45/PL4 fase B)
+//   bit 0 = Front Right  (INT0 / D21 fase A, B=D44/PL5 default·mixed | A13/PK5 all-bts7960)
+//   bit 1 = Front Left   (INT1 / D20 fase A, B=D45/PL4 default·mixed | A14/PK6 all-bts7960)
 //   bit 2 = Center Right (INT2 / D19 fase A, D46/PL3 fase B)
 //   bit 3 = Center Left  (INT3 / D18 fase A, D47/PL2 fase B)
 //   bit 4 = Rear Right   (INT4 / D2  fase A, D48/PL1 fase B)
 //   bit 5 = Rear Left    (INT5 / D3  fase A, D49/PL0 fase B)
 
-static ENCODER_FR: QuadratureEncoder = QuadratureEncoder::new(); // FR — INT0/D21, B=D44/PL5
-static ENCODER_FL: QuadratureEncoder = QuadratureEncoder::new(); // FL — INT1/D20, B=D45/PL4
+static ENCODER_FR: QuadratureEncoder = QuadratureEncoder::new(); // FR — INT0/D21, B=D44/PL5 ó A13/PK5 (all-bts)
+static ENCODER_FL: QuadratureEncoder = QuadratureEncoder::new(); // FL — INT1/D20, B=D45/PL4 ó A14/PK6 (all-bts)
 static ENCODER_CR: QuadratureEncoder = QuadratureEncoder::new(); // CR — INT2/D19, B=D46/PL3
 static ENCODER_CL: QuadratureEncoder = QuadratureEncoder::new(); // CL — INT3/D18, B=D47/PL2
 static ENCODER_RR: QuadratureEncoder = QuadratureEncoder::new(); // RR — INT4/D2,  B=D48/PL1
@@ -92,21 +102,31 @@ static ENCODER_RL: QuadratureEncoder = QuadratureEncoder::new(); // RL — INT5/
 const PIND_ADDR: *const u8 = 0x29 as *const u8; // Port D input: D18=PD3, D19=PD2, D20=PD1, D21=PD0
 const PINE_ADDR: *const u8 = 0x2C as *const u8; // Port E input: D2=PE4, D3=PE5
 const PINL_ADDR: *const u8 = 0x109 as *const u8; // Port L input: D44=PL5…D49=PL0
+#[cfg(feature = "all-bts7960")]
+const PINK_ADDR: *const u8 = 0x106 as *const u8; // Port K input: A13=PK5, A14=PK6
 
 // ─── ISRs — any edge en Fase A (EICRA=0x55, EICRB=0x05) ─────────────────────
 
 #[avr_device::interrupt(atmega2560)]
 fn INT0() {
     let pind = unsafe { core::ptr::read_volatile(PIND_ADDR) };
-    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
-    ENCODER_FR.on_edge((pind & (1 << 0)) != 0, (pinl & (1 << 5)) != 0);
+    // Fase B FR: D44/PL5 en default/mixed; A13/PK5 bajo all-bts7960 (D44 pasa a Timer5C LPWM).
+    #[cfg(not(feature = "all-bts7960"))]
+    let b = (unsafe { core::ptr::read_volatile(PINL_ADDR) } & (1 << 5)) != 0;
+    #[cfg(feature = "all-bts7960")]
+    let b = (unsafe { core::ptr::read_volatile(PINK_ADDR) } & (1 << 5)) != 0;
+    ENCODER_FR.on_edge((pind & (1 << 0)) != 0, b);
 }
 
 #[avr_device::interrupt(atmega2560)]
 fn INT1() {
     let pind = unsafe { core::ptr::read_volatile(PIND_ADDR) };
-    let pinl = unsafe { core::ptr::read_volatile(PINL_ADDR) };
-    ENCODER_FL.on_edge((pind & (1 << 1)) != 0, (pinl & (1 << 4)) != 0);
+    // Fase B FL: D45/PL4 en default/mixed; A14/PK6 bajo all-bts7960 (D45 pasa a Timer5B LPWM).
+    #[cfg(not(feature = "all-bts7960"))]
+    let b = (unsafe { core::ptr::read_volatile(PINL_ADDR) } & (1 << 4)) != 0;
+    #[cfg(feature = "all-bts7960")]
+    let b = (unsafe { core::ptr::read_volatile(PINK_ADDR) } & (1 << 6)) != 0;
+    ENCODER_FL.on_edge((pind & (1 << 1)) != 0, b);
 }
 
 #[avr_device::interrupt(atmega2560)]
@@ -154,6 +174,7 @@ static RX_BUF:     RxRingBuffer = RxRingBuffer::new();
 static TF02_RX_BUF: RxRingBuffer = RxRingBuffer::new();
 
 // ─── EKF estático (sin heap) ───────────────────────────────────────────────────
+#[cfg(not(feature = "no-mpu"))]
 static mut EKF: EkfState = EkfState::new(0.01, 0.09);
 
 /// ISR USART0 RX Complete — copia byte recibido al ring buffer.
@@ -305,48 +326,86 @@ fn main() -> ! {
     let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64);
 
     // ── 6 Motores ────────────────────────────────────────────────────────────
-    // FR y FL siempre L298N (módulos frontales sin cambio de driver).
-    let fr = L298NMotor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d23.into_output(), pins.d25.into_output(), false);
-    let fl = L298NMotor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d22.into_output(), pins.d24.into_output(), false);
-
-    // CR/CL/RR/RL: L298N por defecto; BTS7960 IBT-2 con feature "mixed-drivers".
-    // BTS7960: RPWM = PWM existente, LPWM = nuevo pin, R_EN/L_EN = pines de dirección reutilizados.
+    // FR y FL: L298N por defecto/mixed; BTS7960 IBT-2 bajo feature "all-bts7960".
+    //   Bajo all-bts7960:
+    //     FR: RPWM=D9(OC2B/Timer2)  LPWM=D44(OC5C/Timer5) R_EN=D23 L_EN=D25
+    //     FL: RPWM=D10(OC2A/Timer2) LPWM=D45(OC5B/Timer5) R_EN=D22 L_EN=D24
+    //
+    // CR/CL/RR/RL: L298N por defecto; BTS7960 IBT-2 bajo "mixed-drivers" o "all-bts7960".
     //   CR: RPWM=D5(OC3A/Timer3)  LPWM=D11(OC1A/Timer1) R_EN=D28 L_EN=D29
     //   CL: RPWM=D6(OC4A/Timer4)  LPWM=D12(OC1B/Timer1) R_EN=D30 L_EN=D31
     //   RR: RPWM=D7(OC4B/Timer4)  LPWM=D13(OC1C/Timer1) R_EN=D34 L_EN=D35
     //   RL: RPWM=D8(OC4C/Timer4)  LPWM=D4 (OC0B/Timer0) R_EN=D36 L_EN=D37
-    #[cfg(feature = "mixed-drivers")]
+    #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
     let mut timer1 = Timer1Pwm::new(dp.TC1, Prescaler::Prescale64);
-    #[cfg(feature = "mixed-drivers")]
+    #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
     let mut timer0 = Timer0Pwm::new(dp.TC0, Prescaler::Prescale64);
+    #[cfg(feature = "all-bts7960")]
+    let mut timer5 = Timer5Pwm::new(dp.TC5, Prescaler::Prescale64);
 
-    #[cfg(not(feature = "mixed-drivers"))]
+    // ── FR / FL ───────────────────────────────────────────────────────────────
+    #[cfg(not(feature = "all-bts7960"))]
+    let fr = L298NMotor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d23.into_output(), pins.d25.into_output(), false);
+    #[cfg(not(feature = "all-bts7960"))]
+    let fl = L298NMotor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d22.into_output(), pins.d24.into_output(), false);
+
+    // FR invertido: el cableado M+/M- de la FR requiere inversión (bringup 2026-05-31).
+    #[cfg(feature = "all-bts7960")]
+    let fr = BTS7960Motor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d44.into_output().into_pwm(&mut timer5), pins.d23.into_output(), pins.d25.into_output(), true);
+    // FL invertido: M+/M- físicamente al revés (validado 2026-05-27, confirmado bringup 2026-05-31).
+    #[cfg(feature = "all-bts7960")]
+    let fl = BTS7960Motor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d45.into_output().into_pwm(&mut timer5), pins.d22.into_output(), pins.d24.into_output(), true);
+
+    // ── CR / CL / RR / RL ─────────────────────────────────────────────────────
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
     let cr = L298NMotor::new(pins.d5.into_output().into_pwm(&mut timer3), pins.d28.into_output(), pins.d29.into_output(), false);
-    #[cfg(not(feature = "mixed-drivers"))]
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
     let cl = L298NMotor::new(pins.d6.into_output().into_pwm(&mut timer4), pins.d30.into_output(), pins.d31.into_output(), false);
-    #[cfg(not(feature = "mixed-drivers"))]
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
     let rr = L298NMotor::new(pins.d7.into_output().into_pwm(&mut timer4), pins.d34.into_output(), pins.d35.into_output(), false);
-    #[cfg(not(feature = "mixed-drivers"))]
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
     let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4), pins.d36.into_output(), pins.d37.into_output(), false);
 
-    #[cfg(feature = "mixed-drivers")]
-    let cr = BTS7960Motor::new(pins.d5.into_output().into_pwm(&mut timer3), pins.d11.into_output().into_pwm(&mut timer1), pins.d28.into_output(), pins.d29.into_output(), false);
-    #[cfg(feature = "mixed-drivers")]
-    let cl = BTS7960Motor::new(pins.d6.into_output().into_pwm(&mut timer4), pins.d12.into_output().into_pwm(&mut timer1), pins.d30.into_output(), pins.d31.into_output(), false);
-    #[cfg(feature = "mixed-drivers")]
+    // CR/CL: cableado REAL con LPWM y enables INTERCAMBIADOS respecto al diseño
+    // original (descubierto en bringup 2026-05-31; RPWM D5/D6 sin cambio).
+    //   CR real: RPWM=D5, LPWM=D12 (OC1B), R_EN=D30, L_EN=D31.
+    //   CL real: RPWM=D6, LPWM=D11 (OC1A), R_EN=D28, L_EN=D29.
+    #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
+    let cr = BTS7960Motor::new(pins.d5.into_output().into_pwm(&mut timer3), pins.d12.into_output().into_pwm(&mut timer1), pins.d30.into_output(), pins.d31.into_output(), false);
+    // CL invertido (validado 2026-05-27, confirmado bringup 2026-05-31).
+    #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
+    let cl = BTS7960Motor::new(pins.d6.into_output().into_pwm(&mut timer4), pins.d11.into_output().into_pwm(&mut timer1), pins.d28.into_output(), pins.d29.into_output(), true);
+    #[cfg(any(feature = "mixed-drivers", feature = "all-bts7960"))]
     let rr = BTS7960Motor::new(pins.d7.into_output().into_pwm(&mut timer4), pins.d13.into_output().into_pwm(&mut timer1), pins.d34.into_output(), pins.d35.into_output(), false);
-    #[cfg(feature = "mixed-drivers")]
-    let rl = BTS7960Motor::new(pins.d8.into_output().into_pwm(&mut timer4), pins.d4.into_output().into_pwm(&mut timer0),  pins.d36.into_output(), pins.d37.into_output(), false);
+    // RL: BTS7960 por defecto en mixed/all-bts; L298N bajo all-bts7960+rl-l298n.
+    // El BTS7960 RL resultó SANO en el bringup 2026-05-31 (no estaba quemado),
+    // así que se vuelve a usar como BTS. Pines: RPWM=D8(T4), LPWM=D4(T0),
+    // R_EN=D36, L_EN=D37. inverted=true (gira adelante con el cableado actual).
+    #[cfg(all(any(feature = "mixed-drivers", feature = "all-bts7960"), not(all(feature = "all-bts7960", feature = "rl-l298n"))))]
+    let rl = BTS7960Motor::new(pins.d8.into_output().into_pwm(&mut timer4), pins.d4.into_output().into_pwm(&mut timer0),  pins.d36.into_output(), pins.d37.into_output(), true);
+    #[cfg(all(feature = "all-bts7960", feature = "rl-l298n"))]
+    let rl = L298NMotor::new(pins.d8.into_output().into_pwm(&mut timer4), pins.d36.into_output(), pins.d37.into_output(), false);
 
     let mut rover = SixWheelRover::new(fr, fl, cr, cl, rr, rl);
-    rover.enable_all(); // no-op para L298N; activa R_EN/L_EN en BTS7960
+    // enable_all() se difiere hasta después de calibrar los ACS712 (más abajo):
+    // los drivers deben estar deshabilitados durante el muestreo del offset de cero.
 
-    // ── Encoders fase B — D44–D49 (Port L bits 5–0), pull-up interno ────────
+    // ── Encoders fase B — pull-up interno (20–50 kΩ a 5V) ────────────────────
     // NFP-5840-31ZY-EN: encoder diferencial 6 cables. Se usan A y B;
     // A' y B' (señales complementarias) quedan sin conectar al Mega.
-    // Pull-up interno de 20–50 kΩ a 5V — compatible con salida open-collector.
+    //
+    // FR/FL fase B:
+    //   - default/mixed: D44(PL5) y D45(PL4) — Port L.
+    //   - all-bts7960:   A13(PK5) y A14(PK6) — Port K (D44/D45 ocupados como Timer5 LPWM).
+    // CR/CL/RR/RL fase B: D46..D49 (Port L) en todas las configuraciones.
+    #[cfg(not(feature = "all-bts7960"))]
     let _enc_fr_b = pins.d44.into_pull_up_input(); // PL5 — FR fase B
+    #[cfg(not(feature = "all-bts7960"))]
     let _enc_fl_b = pins.d45.into_pull_up_input(); // PL4 — FL fase B
+    #[cfg(feature = "all-bts7960")]
+    let _enc_fr_b = pins.a13.into_pull_up_input(); // PK5 — FR fase B (movido desde D44)
+    #[cfg(feature = "all-bts7960")]
+    let _enc_fl_b = pins.a14.into_pull_up_input(); // PK6 — FL fase B (movido desde D45)
     let _enc_cr_b = pins.d46.into_pull_up_input(); // PL3 — CR fase B
     let _enc_cl_b = pins.d47.into_pull_up_input(); // PL2 — CL fase B
     let _enc_rr_b = pins.d48.into_pull_up_input(); // PL1 — RR fase B
@@ -374,7 +433,10 @@ fn main() -> ! {
     // Módulo GY-VL53L0XV2: incluye regulador 2.8V y level-shifter integrado.
     // VIN acepta 2.6–5.5V; I2C queda al nivel de VIN. No requiere pull-ups externos.
     // init() puede fallar si el sensor no responde; el sistema opera solo con HC-SR04.
+    // Desactivable con `no-tof`: el rover usa el TF02 LiDAR para distancia, no este.
+    #[cfg(not(feature = "no-tof"))]
     let mut tof = VL53L0X::new();
+    #[cfg(not(feature = "no-tof"))]
     if tof.init() {
         tof.start_continuous();
         iface.log("INFO:TOF_OK");
@@ -415,10 +477,16 @@ fn main() -> ! {
         }
         if !any { iface.log("I2C:NONE"); }
     }
+    // MPU-6050 + EKF — desactivable con `no-mpu` (el rover no usa odometría inercial).
+    #[cfg(not(feature = "no-mpu"))]
     let mut mpu = MPU6050::new();
+    #[cfg(not(feature = "no-mpu"))]
     let mut gyro_bias_z: f32 = 0.0;
+    #[cfg(not(feature = "no-mpu"))]
     let mut accel_bias_x: f32 = 0.0;
+    #[cfg(not(feature = "no-mpu"))]
     let mut accel_bias_z: f32 = 9.80665;
+    #[cfg(not(feature = "no-mpu"))]
     {
         let who = mpu.init();
         if who != 0 {
@@ -482,6 +550,7 @@ fn main() -> ! {
     let acs_cl_pin  = pins.a3.into_analog_input(&mut adc);
     let acs_rr_pin  = pins.a4.into_analog_input(&mut adc);
     let acs_rl_pin  = pins.a5.into_analog_input(&mut adc);
+    #[cfg(not(feature = "no-lm335"))]
     let lm335_pin   = pins.a6.into_analog_input(&mut adc);
     let ntc_b1a_pin = pins.a7.into_analog_input(&mut adc);   // Banco 1 — sensor A
     let ntc_b1b_pin = pins.a8.into_analog_input(&mut adc);   // Banco 1 — sensor B
@@ -490,22 +559,61 @@ fn main() -> ! {
     let ntc_b3a_pin = pins.a11.into_analog_input(&mut adc);  // Banco 3 — sensor A
     let ntc_b3b_pin = pins.a12.into_analog_input(&mut adc);  // Banco 3 — sensor B
 
+    // ── Calibración automática del cero de los ACS712 ───────────────────────
+    // Muestrea cada canal con los drivers aún deshabilitados (corriente ~0), por
+    // lo que la lectura representa el offset físico del sensor (variación de
+    // fábrica + errores de cableado VCC/GND). Sin esto, los chips con offset
+    // grande (>500 mA) disparan OC_FAULT al arranque y dejan la MSM en Fault,
+    // rechazando todo EXP del HLC con ERR:ESTOP.
+    const ACS_CAL_SAMPLES: u8 = 32;
+    let mut acs_zero_mv = [2500i32; 6]; // fallback al ideal VCC/2 si el muestreo falla
+    {
+        let mut cal_sum = [0u32; 6];
+        for _ in 0..ACS_CAL_SAMPLES {
+            cal_sum[0] += acs_fr_pin.analog_read(&mut adc) as u32;
+            cal_sum[1] += acs_fl_pin.analog_read(&mut adc) as u32;
+            cal_sum[2] += acs_cr_pin.analog_read(&mut adc) as u32;
+            cal_sum[3] += acs_cl_pin.analog_read(&mut adc) as u32;
+            cal_sum[4] += acs_rr_pin.analog_read(&mut adc) as u32;
+            cal_sum[5] += acs_rl_pin.analog_read(&mut adc) as u32;
+            arduino_hal::delay_ms(5);
+        }
+        for i in 0..6 {
+            acs_zero_mv[i] = ((cal_sum[i] / ACS_CAL_SAMPLES as u32) * 5000 / 1023) as i32;
+        }
+    }
+
     // Instancias ACS712 por motor [FR, FL, CR, CL, RR, RL].
-    // La variante se elige en compilación según el feature activo.
-    // Para calibrar el zero_mv de un motor concreto usar .calibrate_zero(mv).
+    // La variante (5A/20A/30A) se elige en compilación según el feature activo;
+    // el cero de cada canal se ajusta en runtime con la medición anterior.
     #[cfg(feature = "mixed-drivers")]
     let acs: [ACS712; 6] = [
-        ACS712::new_05a(), ACS712::new_05a(), // FR, FL → L298N
-        ACS712::new_30a(), ACS712::new_30a(), // CR, CL → BTS7960
-        ACS712::new_30a(), ACS712::new_30a(), // RR, RL → BTS7960
+        ACS712::new_05a().calibrate_zero(acs_zero_mv[0]), ACS712::new_05a().calibrate_zero(acs_zero_mv[1]), // FR, FL → L298N
+        ACS712::new_30a().calibrate_zero(acs_zero_mv[2]), ACS712::new_30a().calibrate_zero(acs_zero_mv[3]), // CR, CL → BTS7960
+        ACS712::new_30a().calibrate_zero(acs_zero_mv[4]), ACS712::new_30a().calibrate_zero(acs_zero_mv[5]), // RR, RL → BTS7960
     ];
+    // all-bts7960: 6× ACS712-20A físicos (auditoría 2026-05-27). El 20A da mejor
+    // SNR que el 30A sin saturar (stall NFP-5840 ~6.5 A ≪ 20 A).
     #[cfg(feature = "all-bts7960")]
-    let acs: [ACS712; 6] = [ACS712::new_30a(); 6];
+    let acs: [ACS712; 6] = [
+        ACS712::new_20a().calibrate_zero(acs_zero_mv[0]), ACS712::new_20a().calibrate_zero(acs_zero_mv[1]),
+        ACS712::new_20a().calibrate_zero(acs_zero_mv[2]), ACS712::new_20a().calibrate_zero(acs_zero_mv[3]),
+        ACS712::new_20a().calibrate_zero(acs_zero_mv[4]), ACS712::new_20a().calibrate_zero(acs_zero_mv[5]),
+    ];
     #[cfg(feature = "all-20a")]
-    let acs: [ACS712; 6] = [ACS712::new_20a(); 6]; // trade-off: un tipo para todos
+    let acs: [ACS712; 6] = [
+        ACS712::new_20a().calibrate_zero(acs_zero_mv[0]), ACS712::new_20a().calibrate_zero(acs_zero_mv[1]),
+        ACS712::new_20a().calibrate_zero(acs_zero_mv[2]), ACS712::new_20a().calibrate_zero(acs_zero_mv[3]),
+        ACS712::new_20a().calibrate_zero(acs_zero_mv[4]), ACS712::new_20a().calibrate_zero(acs_zero_mv[5]),
+    ];
     #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a")))]
-    let acs: [ACS712; 6] = [ACS712::new_05a(); 6]; // all-l298n (default)
+    let acs: [ACS712; 6] = [
+        ACS712::new_05a().calibrate_zero(acs_zero_mv[0]), ACS712::new_05a().calibrate_zero(acs_zero_mv[1]),
+        ACS712::new_05a().calibrate_zero(acs_zero_mv[2]), ACS712::new_05a().calibrate_zero(acs_zero_mv[3]),
+        ACS712::new_05a().calibrate_zero(acs_zero_mv[4]), ACS712::new_05a().calibrate_zero(acs_zero_mv[5]),
+    ]; // all-l298n (default)
 
+    #[cfg(not(feature = "no-lm335"))]
     let lm335 = LM335::new(); // offset 0 K — ajustar con with_offset si es necesario
 
     // Instancias NTC por sensor de batería [B1a, B1b, B2a, B2b, B3a, B3b].
@@ -536,8 +644,6 @@ fn main() -> ! {
     let mut elapsed_ms:      u32 = 0; // timestamp relativo desde arranque (overflow ~49 días)
     let mut sensor_frame = SensorFrame::ZERO; // última lectura de ACS712 + LM335
 
-    // --- Calibración de Bias IMU ---
-    let mut calib_samples: u16 = 0;
 
     // Estado de stall por encoder (parallel al stall_mask de la MSM)
     let mut last_counts  = [0i32; 6];
@@ -553,20 +659,73 @@ fn main() -> ! {
     let mut tf02_sig_logged: bool = false;
 
     iface.log(read_reset_cause());
-    #[cfg(feature = "mixed-drivers")]
+    #[cfg(all(feature = "mixed-drivers", not(feature = "all-bts7960")))]
     iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA3221 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [mixed-drivers: FR/FL=L298N CR/CL/RR/RL=BTS7960] ===");
-    #[cfg(not(feature = "mixed-drivers"))]
+    #[cfg(feature = "all-bts7960")]
+    iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA3221 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [all-bts7960: 6x BTS7960 Timer5C/B en D44/D45] ===");
+    #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960")))]
     iface.log("=== ROVER OLYMPUS v2.20 — MSM + HC-SR04 + VL53L0X + TF02 + INA3221 + ENCODERS + ACS712 + LM335 + NTC + RELAY + CLB [all-l298n] ===");
+
+    // Reporta el cero calibrado de cada ACS712 (mV). Útil para detectar un chip
+    // con offset anómalo (p.ej. RR ≈ 1700 mV vs ~3000 normal → chip dañado).
+    {
+        let mut zb = [0u8; 64];
+        let mut zi = 0;
+        for &b in b"INFO:ACS_ZERO_MV" { zb[zi] = b; zi += 1; }
+        for mv in &acs_zero_mv {
+            zb[zi] = b':'; zi += 1;
+            write_i32(*mv, &mut zb, &mut zi);
+        }
+        zb[zi] = b'\n'; zi += 1;
+        iface.send_response(&zb[..zi]);
+    }
+
+    // Habilitar drivers ahora que los ACS712 ya calibraron su cero con duty=0.
+    rover.enable_all(); // no-op para L298N; activa R_EN/L_EN en BTS7960
+
+    // Estado de energía de los drivers (true tras enable_all() arriba).
+    // Los BTS7960 se de-energizan (R_EN/L_EN→LOW, Hi-Z) en estados sin tracción
+    // y se re-habilitan al volver a un estado con tracción (comportamiento por
+    // defecto, ver sección 0 del loop).
+    let mut motors_energized = true;
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     loop {
+        // 0. Gestión de energía del driver según el estado del MSM (DEFAULT).
+        //    FIX definitivo "FR gira en FAULT": el debug_all_motors_bts NO gira
+        //    en reposo porque termina con disable() (EN bajo, Hi-Z). El MSM, en
+        //    cambio, dejaba R_EN/L_EN ALTOS para siempre tras enable_all(): en
+        //    FAULT/Standby los IN quedan bajos pero EN alto = freno activo, y el
+        //    FR (chip con fuga de high-side gateada por EN) seguía girando.
+        //    Aquí de-energizamos el puente-H en Fault/Safe/Standby (corte real,
+        //    no freno) y re-habilitamos antes de manejar. Latencia 1 ciclo (20 ms).
+        {
+            let want_energized = !matches!(
+                msm.state,
+                RoverState::Fault | RoverState::Safe | RoverState::Standby
+            );
+            if want_energized && !motors_energized {
+                rover.enable_all();
+                motors_energized = true;
+            } else if !want_energized && motors_energized {
+                rover.disable_all();
+                motors_energized = false;
+            }
+        }
+
         // 1. Watchdog de comunicación
+        // EXPERIMENTO de bisección (feature "no-watchdog"): si se desactiva, el
+        // rover NUNCA entra en FAULT por pérdida de PING. Si con esto el FR deja
+        // de girar solo, queda confirmado que la causa es el path de FAULT (la
+        // rampa congelada), no un subsistema (EKF/I2C/encoders/etc.).
+        #[cfg(not(feature = "no-watchdog"))]
         if let Some(wdog_resp) = msm.tick() {
             sync_drive!(soft, rover, msm, ramp); // watchdog: no hay peligro físico, rampa suave
             iface.send_response(format_response(wdog_resp, &mut resp_buf));
         }
 
         // 1.5. EKF — cada ciclo (~20 ms); dentro del watchdog solo se actualizaba en timeout
+        #[cfg(not(feature = "no-mpu"))]
         if let Some(raw) = mpu.read_raw() {
             let ax = raw.0 as f32 * ACCEL_SCALE - accel_bias_x;
             let az = raw.2 as f32 * ACCEL_SCALE - accel_bias_z + 9.80665;
@@ -588,26 +747,41 @@ fn main() -> ! {
             hc_counter = 0;
             #[cfg(not(feature = "no-hcsr04"))]
             {
-                let hc_thresh = if msm.state == RoverState::Climb { CLB_HC_EMERGENCY_MM } else { HC_EMERGENCY_MM };
                 if let Ok(mm) = hcsr04.measure_mm() {
-                    if mm < hc_thresh {
-                        let resp = msm.process(Command::Fault);
-                        relay.emergency_off(); // corte hardware: obstáculo físico
-                        sync_drive!(hard, rover, msm, ramp);
-                        iface.send_response(format_response(resp, &mut resp_buf));
+                    // Proximidad HC-SR04 → campo dist_mm del TLM (f[19]). Con no-tof
+                    // el VL53L0X queda fuera y deja dist_mm en 0; aquí el HC-SR04 es
+                    // el único que lo escribe (es la proximidad real que usa el rover).
+                    sensor_frame.dist_mm = mm;
+                    // FAULT por proximidad: desactivable con `hcsr04-no-fault` (el
+                    // HC-SR04 es ruidoso y un pico espurio frenaba los motores). Con
+                    // ese flag solo se telemetría dist_mm; la protección de proximidad
+                    // la decide el HLC (retreat, gobernado por el nivel de seguridad).
+                    #[cfg(not(feature = "hcsr04-no-fault"))]
+                    {
+                        let hc_thresh = if msm.state == RoverState::Climb { CLB_HC_EMERGENCY_MM } else { HC_EMERGENCY_MM };
+                        if mm < hc_thresh {
+                            let resp = msm.process(Command::Fault);
+                            relay.emergency_off(); // corte hardware: obstáculo físico
+                            sync_drive!(hard, rover, msm, ramp);
+                            iface.send_response(format_response(resp, &mut resp_buf));
+                        }
                     }
                 }
             }
             // VL53L0X: lectura no bloqueante — NotReady si el sensor aún no tiene muestra.
-            let tof_thresh = if msm.state == RoverState::Climb { CLB_TOF_EMERGENCY_MM } else { TOF_EMERGENCY_MM };
-            if tof.ready {
-                if let Ok(mm) = tof.read_mm() {
-                    sensor_frame.dist_mm = mm;
-                    if mm < tof_thresh {
-                        let resp = msm.process(Command::Fault);
-                        relay.emergency_off(); // corte hardware: ToF láser
-                        sync_drive!(hard, rover, msm, ramp);
-                        iface.send_response(format_response(resp, &mut resp_buf));
+            // Desactivado con `no-tof` (el rover no usa este sensor).
+            #[cfg(not(feature = "no-tof"))]
+            {
+                let tof_thresh = if msm.state == RoverState::Climb { CLB_TOF_EMERGENCY_MM } else { TOF_EMERGENCY_MM };
+                if tof.ready {
+                    if let Ok(mm) = tof.read_mm() {
+                        sensor_frame.dist_mm = mm;
+                        if mm < tof_thresh {
+                            let resp = msm.process(Command::Fault);
+                            relay.emergency_off(); // corte hardware: ToF láser
+                            sync_drive!(hard, rover, msm, ramp);
+                            iface.send_response(format_response(resp, &mut resp_buf));
+                        }
                     }
                 }
             }
@@ -679,6 +853,7 @@ fn main() -> ! {
             
             // --- Telemetría RAW para Calibración EKF/MATLAB (v2.13) ---
             // Formato: RAW:tick:ax:ay:az:gx:gy:gz:encL:encR
+            #[cfg(not(feature = "no-mpu"))]
             if let Some(raw) = mpu.read_raw() {
                 let mut raw_buf = [0u8; 100];
                 let mut r_i = 0;
@@ -864,39 +1039,49 @@ fn main() -> ! {
             }
             }
 
-            // Leer 6 sensores NTC de batería y clasificar el peor nivel térmico.
-            let raw_batt = [
-                adc_avg!(ntc_b1a_pin, adc, SEN_SAMPLES),
-                adc_avg!(ntc_b1b_pin, adc, SEN_SAMPLES),
-                adc_avg!(ntc_b2a_pin, adc, SEN_SAMPLES),
-                adc_avg!(ntc_b2b_pin, adc, SEN_SAMPLES),
-                adc_avg!(ntc_b3a_pin, adc, SEN_SAMPLES),
-                adc_avg!(ntc_b3b_pin, adc, SEN_SAMPLES),
-            ];
-            for i in 0..6usize {
-                let t_raw = ntc_batt[i].read_celsius(raw_batt[i]);
-                // Validar plausibilidad antes de usar en clasificación de seguridad.
-                // NTC desconectado (ADC flotante) puede devolver -20 °C o 100 °C,
-                // valores que están en los extremos del rango válido. Si el ADC
-                // devuelve un valor imposible (fuera de -20..100) es basura → ignorar.
-                let t = match check_temp_c(t_raw, BATT_TEMP_MIN_C, BATT_TEMP_MAX_C) {
-                    Some(t_valid) => t_valid,
-                    None => {
-                        iface.log("WARN:NTC_OOR");
-                        continue; // no actualizar sensor_frame ni clasificar nivel
-                    }
-                };
-                sensor_frame.batt_temps[i] = t;
-                let level = if t > BATT_FAULT_C {
-                    SafetyState::FaultStall
-                } else if t > BATT_LIMIT_C {
-                    SafetyState::Limit
-                } else if t > BATT_WARN_C {
-                    SafetyState::Warn
-                } else {
-                    SafetyState::Normal
-                };
-                if level > worst { worst = level; }
+            // Leer NTC de batería y clasificar el peor nivel térmico.
+            // ntc4: solo hay 4 NTC físicos (A7–A10). A11/A12 quedan al aire y
+            // leerían ~50–56 °C basura → falso LIMIT. Con ntc4 no se clasifican.
+            // no-ntc: omite por completo la lectura y clasificación térmica de los
+            // termistores de batería. Un NTC desconectado lee -20/100 °C (extremos
+            // del rango válido) → dispararía un FAULT de sobre-temperatura FALSO.
+            // Con no-ntc, batt_temps queda en 0 y nunca contribuye a `worst`.
+            #[cfg(not(feature = "no-ntc"))]
+            {
+                const NTC_N: usize = if cfg!(feature = "ntc4") { 4 } else { 6 };
+                let raw_batt = [
+                    adc_avg!(ntc_b1a_pin, adc, SEN_SAMPLES),
+                    adc_avg!(ntc_b1b_pin, adc, SEN_SAMPLES),
+                    adc_avg!(ntc_b2a_pin, adc, SEN_SAMPLES),
+                    adc_avg!(ntc_b2b_pin, adc, SEN_SAMPLES),
+                    adc_avg!(ntc_b3a_pin, adc, SEN_SAMPLES),
+                    adc_avg!(ntc_b3b_pin, adc, SEN_SAMPLES),
+                ];
+                for i in 0..NTC_N {
+                    let t_raw = ntc_batt[i].read_celsius(raw_batt[i]);
+                    // Validar plausibilidad antes de usar en clasificación de seguridad.
+                    // NTC desconectado (ADC flotante) puede devolver -20 °C o 100 °C,
+                    // valores que están en los extremos del rango válido. Si el ADC
+                    // devuelve un valor imposible (fuera de -20..100) es basura → ignorar.
+                    let t = match check_temp_c(t_raw, BATT_TEMP_MIN_C, BATT_TEMP_MAX_C) {
+                        Some(t_valid) => t_valid,
+                        None => {
+                            iface.log("WARN:NTC_OOR");
+                            continue; // no actualizar sensor_frame ni clasificar nivel
+                        }
+                    };
+                    sensor_frame.batt_temps[i] = t;
+                    let level = if t > BATT_FAULT_C {
+                        SafetyState::FaultStall
+                    } else if t > BATT_LIMIT_C {
+                        SafetyState::Limit
+                    } else if t > BATT_WARN_C {
+                        SafetyState::Warn
+                    } else {
+                        SafetyState::Normal
+                    };
+                    if level > worst { worst = level; }
+                }
             }
 
             let prev_safety = msm.safety;
@@ -923,6 +1108,30 @@ fn main() -> ! {
         if tlm_counter >= TLM_PERIOD {
             tlm_counter = 0;
             iface.send_response(format_response(msm.telemetry(0, sensor_frame), &mut resp_buf));
+        }
+
+        // 7. Convergencia de rampa garantizada en estados SIN tracción.
+        //    FIX bug "FR gira solo en FAULT": `sync_drive!` es event-driven; el
+        //    watchdog dispara la transición a Fault UNA sola vez (msm.tick()
+        //    retorna Some solo en el flanco), por lo que la rampa solo avanza
+        //    UN paso (p.ej. 30→20%) y luego se CONGELA — nada vuelve a llamar
+        //    sync_drive! sin PING/obstáculo/stall/OC. Los 6 motores quedan con
+        //    PWM residual; la rueda de menor fricción (FR) es la única que lo
+        //    vence y sigue girando. Aquí forzamos que la rampa llegue a 0 en
+        //    ≤200 ms (RAMP_STEP_SOFT) en Fault/Safe/Standby y se quede ahí.
+        //    Solo actúa en estados de reposo y solo mientras la rampa ≠ 0 → no
+        //    interfiere con la rampa event-driven de Explore/Climb (no doble paso).
+        //    DEFAULT: garantiza además que ramp.actual quede en 0 al desactivar
+        //    los drivers, para un re-arranque limpio (no salta desde un residual).
+        {
+            match msm.state {
+                RoverState::Fault | RoverState::Safe | RoverState::Standby => {
+                    if ramp.actual_l != 0 || ramp.actual_r != 0 {
+                        sync_drive!(soft, rover, msm, ramp);
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Actualizar timestamp relativo antes del delay para que el próximo

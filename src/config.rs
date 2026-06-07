@@ -183,15 +183,31 @@ pub const RAMP_STEP_SOFT: i16 = 10;
 ///
 /// El L298N tolera 2 A continuos y 3 A de pico por canal (ST Microelectronics,
 /// 2000, *L298 Dual Full-Bridge Driver*, Table 3 — DC output current per channel).
-/// Los umbrales siguen la escala 60 % / 80 % / 100 % de la corriente continua
-/// nominal, práctica estándar en protección de motores industriales:
-///   NEMA MG 1-2021, §12.53: "Overcurrent protection should operate at
-///   115–125 % of rated current for continuous-duty motors."
-/// Usar 100 % (= 2 000 mA) como FAULT es conservador respecto al pico de 3 A;
-/// garantiza disparo antes de alcanzar la corriente de stall del motor.
-pub const OC_WARN_L298N:  i32 = 1_200; // 60 % de 2 A (operación prolongada con carga alta)
-pub const OC_LIMIT_L298N: i32 = 1_600; // 80 % de 2 A (reducir velocidad, safety → Limit)
-pub const OC_FAULT_L298N: i32 = 2_000; // 100 % de 2 A (detención inmediata, safety → Fault)
+///
+/// **Historial de revisiones:**
+/// - v1 (default histórico): FAULT = 2 000 mA (100 % del spec, sin margen).
+/// - v2 (2026-05-27 mañana): FAULT = 1 500 mA (75 % del spec, derated).
+///   Disparaba con falsos positivos en la combinación `all-bts7960 + rl-l298n`
+///   porque la ACS712 RL recoge ~1 500 mA de crosstalk PWM de los otros 5
+///   motores conmutando a 490 Hz (verificado en `test_only_rl_l298n`: motor
+///   real consume ~300 mA, lectura inducida por bus ~1 500 mA).
+/// - **v3 (2026-05-27 tarde): FAULT = 2 500 mA.** Se acepta que el L298N
+///   opere brevemente sobre el spec continuo (2 000 mA) pero bajo el pico
+///   absoluto (3 000 mA). Esto NO da licencia para operación sostenida en
+///   2.5 A — el chip se calienta y eventualmente falla. La justificación es:
+///   * crosstalk PWM ~1.5 A inducido en bus con 5+ motores activos
+///   * corriente real del motor en marcha libre ≤ 500 mA
+///   * stall NFP-5840 = 6 500 mA → OC sigue protegiendo contra stall real
+///   * spike transitorio < 100 ms es tolerable por el L298N
+///
+/// **Mitigaciones complementarias recomendadas:**
+/// 1. Reducir crosstalk con cableado físico (twisted pair ACS712 RL, separar
+///    de cables PWM, blindaje).
+/// 2. Promediar más muestras antes del OC check (latencia vs SNR).
+/// 3. Cuando se haga (1) o (2), bajar OC_FAULT_L298N de vuelta a 1 800 mA.
+pub const OC_WARN_L298N:  i32 = 1_500; // 60 % de 2 500 mA
+pub const OC_LIMIT_L298N: i32 = 2_000; // 80 % de 2 500 mA (spec continuo del chip)
+pub const OC_FAULT_L298N: i32 = 2_500; // sobre spec continuo pero bajo pico 3A — solo transitorios cortos
 
 /// Umbrales de sobrecorriente para driver BTS7960.
 ///
@@ -230,30 +246,39 @@ pub const OC_FAULT_BTS: i32 = 4_800; // 96 % del límite del convertidor (5 A) �
 
 /// Umbrales de sobrecorriente por motor `[FR, FL, CR, CL, RR, RL]`.
 /// Seleccionados en tiempo de compilación según el feature activo.
-#[cfg(feature = "mixed-drivers")]
+#[cfg(all(feature = "mixed-drivers", not(feature = "no-oc")))]
 pub const OC_WARN:  [i32; 6] = [OC_WARN_L298N,  OC_WARN_L298N,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS];
-#[cfg(feature = "mixed-drivers")]
+#[cfg(all(feature = "mixed-drivers", not(feature = "no-oc")))]
 pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N, OC_LIMIT_L298N, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS];
-#[cfg(feature = "mixed-drivers")]
+#[cfg(all(feature = "mixed-drivers", not(feature = "no-oc")))]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N, OC_FAULT_L298N, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS];
 
-#[cfg(feature = "all-bts7960")]
+#[cfg(all(feature = "all-bts7960", not(feature = "rl-l298n"), not(feature = "no-oc")))]
 pub const OC_WARN:  [i32; 6] = [OC_WARN_BTS;  6];
-#[cfg(feature = "all-bts7960")]
+#[cfg(all(feature = "all-bts7960", not(feature = "rl-l298n"), not(feature = "no-oc")))]
 pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_BTS; 6];
-#[cfg(feature = "all-bts7960")]
+#[cfg(all(feature = "all-bts7960", not(feature = "rl-l298n"), not(feature = "no-oc")))]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_BTS; 6];
+
+// `all-bts7960 + rl-l298n`: 5× BTS7960 + RL como L298N (sustituto del BTS7960
+// RL quemado en 2026-05-27). El L298N tiene OC_FAULT derated a 1 500 mA.
+#[cfg(all(feature = "all-bts7960", feature = "rl-l298n", not(feature = "no-oc")))]
+pub const OC_WARN:  [i32; 6] = [OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_L298N];
+#[cfg(all(feature = "all-bts7960", feature = "rl-l298n", not(feature = "no-oc")))]
+pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_L298N];
+#[cfg(all(feature = "all-bts7960", feature = "rl-l298n", not(feature = "no-oc")))]
+pub const OC_FAULT: [i32; 6] = [OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_L298N];
 
 // 6× ACS712-20A — layout: FR/FL → L298N, CR/CL/RR/RL → BTS7960.
 // Los umbrales son idénticos a mixed-drivers: el sensor cambia, no los límites
 // del motor. La resolución de 49 mA/count es suficiente para ambos:
 //   L298N fault 2000 mA → 41 counts de margen
 //   BTS7960 fault 15000 mA → 306 counts de margen (< 20 A, no satura)
-#[cfg(feature = "all-20a")]
+#[cfg(all(feature = "all-20a", not(feature = "no-oc")))]
 pub const OC_WARN:  [i32; 6] = [OC_WARN_L298N,  OC_WARN_L298N,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS,  OC_WARN_BTS];
-#[cfg(feature = "all-20a")]
+#[cfg(all(feature = "all-20a", not(feature = "no-oc")))]
 pub const OC_LIMIT: [i32; 6] = [OC_LIMIT_L298N, OC_LIMIT_L298N, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS, OC_LIMIT_BTS];
-#[cfg(feature = "all-20a")]
+#[cfg(all(feature = "all-20a", not(feature = "no-oc")))]
 pub const OC_FAULT: [i32; 6] = [OC_FAULT_L298N, OC_FAULT_L298N, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS, OC_FAULT_BTS];
 
 #[cfg(not(any(feature = "mixed-drivers", feature = "all-bts7960", feature = "all-20a", feature = "no-oc")))]

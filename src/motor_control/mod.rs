@@ -139,4 +139,20 @@ where
         self.center_right.enable();
         self.rear_right.enable();
     }
+
+    /// Deshabilita los 6 drivers (R_EN/L_EN → LOW, salidas en Hi-Z). No-op para L298N.
+    ///
+    /// De-energiza por completo los puentes-H: a diferencia de `stop()`/`brake_all()`
+    /// (que dejan el BTS7960 con EN alto e IN bajos = freno activo permanente), esto
+    /// corta la habilitación del chip. Es el estado de reposo SEGURO probado en el
+    /// debug `debug_all_motors_bts` (termina con `disable()`), donde ninguna rueda
+    /// gira sola. Usar en estados sin tracción (Fault/Safe/Standby).
+    pub fn disable_all(&mut self) {
+        self.frontal_left.disable();
+        self.center_left.disable();
+        self.rear_left.disable();
+        self.frontal_right.disable();
+        self.center_right.disable();
+        self.rear_right.disable();
+    }
 }

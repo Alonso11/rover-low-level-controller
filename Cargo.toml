@@ -20,10 +20,19 @@ avr = ["panic-halt", "avr-device", "arduino-hal"]
 mixed-drivers = []
 all-bts7960   = []
 all-20a       = []   # 6× ACS712-20A — trade-off único tipo de sensor
+rl-l298n      = []   # Combina con all-bts7960: 5× BTS7960 + RL como L298N (sustituto cuando el BTS7960 RL se quema; OC_FAULT derated a 1500 mA)
 no-oc         = []   # desactiva protección de sobrecorriente (solo pruebas HW sin ACS712)
 no-stall      = []   # desactiva detección de stall por encoder (solo pruebas HW sin encoders)
 no-lm335      = []   # desactiva lectura LM335 (solo pruebas HW sin sensor de temperatura)
-no-hcsr04     = []   # desactiva fault por proximidad HC-SR04 (solo pruebas HW sin sensor)
+no-hcsr04     = []   # desactiva COMPLETO el HC-SR04 (ni lo lee; solo pruebas HW sin sensor)
+hcsr04-no-fault = [] # lee HC-SR04 y lo telemetría (dist_mm) pero NO faultea por proximidad (sensor ruidoso → FAULT falso; la protección la da el HLC vía retreat)
+no-tof        = []   # desactiva VL53L0X (ToF láser corto alcance, soft I2C 0x29). El rover NO lo usa: la distancia la da el TF02 LiDAR. Evita tráfico/latencia I2C y dist_mm queda en 0.
+no-mpu        = []   # desactiva MPU-6050 + EKF (odometría inercial, I2C 0x68). NO se usa. La odometría queda solo por encoders; x/y/theta y RAW: en TLM quedan en 0/ausentes.
+no-ntc        = []   # desactiva lectura/clasificación térmica de NTC de batería. Un termistor DESCONECTADO lee -20/100°C → FAULT falso de sobre-temp. Con no-ntc, batt_temps=0 y no faultea.
+ntc4          = []   # solo 4 NTC conectados (A7–A10); ignora A11/A12 (evita falso LIMIT por pines al aire)
+ramp-converge = []   # FIX bug "FR gira en FAULT": fuerza la convergencia de la rampa a 0 cada ciclo en estados sin tracción (Fault/Safe/Standby). Sin esto, la rampa se congela a media bajada al entrar en FAULT por watchdog y queda PWM residual.
+no-watchdog   = []   # desactiva el watchdog de comms (no entra en FAULT al perder PING). EXPERIMENTO de bisección: si con esto el FR ya NO gira, se confirma que la causa es el path de FAULT, no un subsistema.
+idle-disable  = []   # FIX def. "FR gira en FAULT": de-energiza los drivers (R_EN/L_EN→LOW, Hi-Z) en estados sin tracción (Fault/Safe/Standby) en vez de dejar EN alto + freno. Replica el estado de reposo del debug_all_motors_bts (que termina con disable() y NO gira). Re-habilita al volver a un estado con tracción.
 
 [dependencies]
 ufmt = "0.2.0"

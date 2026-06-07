@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 test_motors_main.py — Test de motores con firmware principal (EXP mode).
-Requiere: make flash-no-oc primero.
+Requiere: make flash-mixed-no-stall  (prueba 1 motor BTS7960)
+          make flash-no-oc           (prueba motores L298N sin OC)
+          make flash                 (firmware completo)
 
 Controles:
     w / s    → adelante / atrás    (EXP:50:50 / EXP:-50:-50)

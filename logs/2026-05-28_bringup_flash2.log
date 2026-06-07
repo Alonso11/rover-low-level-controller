@@ -1,0 +1,152 @@
+[1m>> Flash LLC → /dev/ttyACM1 [5x BTS7960 + RL=L298N — BRING-UP: stall + OC DESACTIVADOS][0m
+  Para verificar comunicación MSM y sensores sin que el HW pendiente (RR/CR/CL) dispare FAULT.
+  NO usar en operación: sin protección de stall ni sobrecorriente.
+RAVEDUDE_PORT=/dev/ttyACM1 \
+RUSTFLAGS="-C target-cpu=atmega2560" \
+cargo +nightly run --release \
+  -Zjson-target-spec \
+  -Zbuild-std=core \
+  --features all-bts7960,rl-l298n,no-stall,no-oc,no-lm335,ntc4
+warning: feature `abi_avr_interrupt` is declared but not used
+ --> src/lib.rs:3:42
+  |
+3 | #![cfg_attr(target_arch = "avr", feature(abi_avr_interrupt))]
+  |                                          ^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rover-low-level-controller` (lib) generated 1 warning
+warning: unused doc comment
+   --> src/main.rs:177:1
+    |
+177 | / /// ISR USART0 RX Complete — copia byte recibido al ring buffer.
+178 | | /// En producción (USART3) renombrar a USART3_RX y leer UDR3.
+    | |_------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/main.rs:187:1
+    |
+187 | / /// ISR USART2 RX Complete — almacena cada byte del TF02 antes de que el FIFO se llene.
+188 | | /// El TF02 envía 9 bytes en ~781 µs (115200 baud); sin ISR los bytes 3-9 se pierden.
+    | |_------------------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `BankMode`
+  --> src/main.rs:74:37
+   |
+74 |     format_response, parse_command, BankMode, Command, MasterStateMachine, Response, RoverState,
+   |                                     ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `arduino_hal::prelude`
+  --> src/main.rs:72:5
+   |
+72 | use arduino_hal::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/main.rs:339:9
+    |
+339 |     let mut timer0 = Timer0Pwm::new(dp.TC0, Prescaler::Prescale64);
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/main.rs:628:9
+    |
+628 |     let mut calib_samples: u16 = 0;
+    |         ----^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `timer0`
+   --> src/main.rs:339:9
+    |
+339 |     let mut timer0 = Timer0Pwm::new(dp.TC0, Prescaler::Prescale64);
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_timer0`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `lm335_pin`
+   --> src/main.rs:535:9
+    |
+535 |     let lm335_pin   = pins.a6.into_analog_input(&mut adc);
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_lm335_pin`
+
+warning: unused variable: `lm335`
+   --> src/main.rs:597:9
+    |
+597 |     let lm335 = LM335::new(); // offset 0 K — ajustar con with_offset si es necesario
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_lm335`
+
+warning: unused variable: `calib_samples`
+   --> src/main.rs:628:9
+    |
+628 |     let mut calib_samples: u16 = 0;
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_calib_samples`
+
+warning: creating a mutable reference to mutable static
+   --> src/main.rs:681:32
+    |
+681 |             let ekf = unsafe { &mut EKF };
+    |                                ^^^^^^^^ mutable reference to mutable static
+    |
+    = note: mutable references to mutable statics are dangerous; it's undefined behavior if any other pointer to the static is used or if any other reference is created for the static while the mutable reference lives
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+    = note: `#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+help: use `&raw mut` instead to create a raw pointer
+    |
+681 |             let ekf = unsafe { &raw mut EKF };
+    |                                 +++
+
+warning: variable `deL` should have a snake case name
+   --> src/main.rs:682:17
+    |
+682 | ...   let deL = ENCODER_FL.get_counts().wrapping_sub(last_counts[1]) + ENCODER_CL.get_counts().wrapping_sub(last_counts[3]) + ENCOD...
+    |           ^^^ help: convert the identifier to snake case: `de_l`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: variable `deR` should have a snake case name
+   --> src/main.rs:683:17
+    |
+683 | ...   let deR = ENCODER_FR.get_counts().wrapping_sub(last_counts[0]) + ENCODER_CR.get_counts().wrapping_sub(last_counts[2]) + ENCOD...
+    |           ^^^ help: convert the identifier to snake case: `de_r`
+
+warning: `rover-low-level-controller` (bin "rover-low-level-controller") generated 13 warnings (run `cargo fix --bin "rover-low-level-controller" -p rover-low-level-controller` to apply 7 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.08s
+     Running `ravedude target/avr-atmega2560/release/rover-low-level-controller`
+       Board Arduino Mega 2560
+ Programming target/avr-atmega2560/release/rover-low-level-controller => /dev/ttyACM1
+
+avrdude: AVR device initialized and ready to accept instructions
+avrdude: device signature = 0x1e9801 (probably m2560)
+avrdude: reading input file target/avr-atmega2560/release/rover-low-level-controller for flash
+         with 72664 bytes in 1 section within [0, 0x11bd7]
+         using 284 pages and 40 pad bytes
+avrdude: writing 72664 bytes flash ...
+
+Writing | ################################################## | 100% 10.20s
+
+avrdude: 72664 bytes of flash written
+avrdude: verifying flash memory against target/avr-atmega2560/release/rover-low-level-controller
+
+Reading | ################################################## | 100% 7.48s
+
+avrdude: 72664 bytes of flash verified
+
+avrdude done.  Thank you.
+
+  Programmed target/avr-atmega2560/release/rover-low-level-controller

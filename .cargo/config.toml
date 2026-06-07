@@ -3,3 +3,9 @@ target = "avr-atmega2560.json"
 
 [target.'cfg(target_arch = "avr")']
 runner = "ravedude"
+# El CPU debe ir aquí (no en RUSTFLAGS env) para que -Zbuild-std lo propague a
+# core/compiler_builtins. Desde nightly ~2026-05, rustc exige -C target-cpu en
+# AVR al generar el object de metadata (metadata.rs: "AVR CPU not explicitly
+# specified"); el campo "cpu" del target JSON ya no basta para build-std, y el
+# RUSTFLAGS del entorno NO se hereda a las crates de build-std. config rustflags sí.
+rustflags = ["-C", "target-cpu=atmega2560"]
