@@ -437,6 +437,17 @@ flash-medir-bateria:
 	  -Zbuild-std=core \
 	  --example medir_bateria
 
+flash-medir-bateria-raw:
+	@printf "$(BOLD)>> Flash medir_bateria_raw → $(PORT) [2º Mega, ADC crudo, factor en Python]$(RESET)\n"
+	@printf "  Emite ADC crudo (0-1023), el factor se pasa a capturar_bateria.py --factor.\n"
+	@printf "  Cableado: pot 10k como divisor (extremos a V_bat y GND, wiper a A0/A1).\n"
+	RAVEDUDE_PORT=$(PORT) \
+	RUSTFLAGS="-C target-cpu=atmega2560" \
+	cargo +nightly run --release \
+	  -Zjson-target-spec \
+	  -Zbuild-std=core \
+	  --example medir_bateria_raw
+
 flash-debug-fr-enc:
 	@printf "$(BOLD)>> Flash debug_only_fr_enc → $(PORT) [FR vs FL mismo duty, ratio de conteo encoder]$(RESET)\n"
 	@printf "  ROVER ELEVADO. ratio_x100~100=ok, ~200=FR sobre-cuenta (flancos espurios fase A).\n"

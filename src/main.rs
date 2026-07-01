@@ -349,9 +349,10 @@ fn main() -> ! {
     #[cfg(not(feature = "all-bts7960"))]
     let fl = L298NMotor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d22.into_output(), pins.d24.into_output(), false);
 
-    // FR invertido: el cableado M+/M- de la FR requiere inversión (bringup 2026-05-31).
+    // FR NO invertido: el bringup 2026-05-31 reportó inversión por error; en la práctica
+    // FR gira igual que CR/RR (adelante con velocidad positiva, atrás con negativa).
     #[cfg(feature = "all-bts7960")]
-    let fr = BTS7960Motor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d44.into_output().into_pwm(&mut timer5), pins.d23.into_output(), pins.d25.into_output(), true);
+    let fr = BTS7960Motor::new(pins.d9.into_output().into_pwm(&mut timer2),  pins.d44.into_output().into_pwm(&mut timer5), pins.d23.into_output(), pins.d25.into_output(), false);
     // FL invertido: M+/M- físicamente al revés (validado 2026-05-27, confirmado bringup 2026-05-31).
     #[cfg(feature = "all-bts7960")]
     let fl = BTS7960Motor::new(pins.d10.into_output().into_pwm(&mut timer2), pins.d45.into_output().into_pwm(&mut timer5), pins.d22.into_output(), pins.d24.into_output(), true);

@@ -2,34 +2,39 @@
 """
 capturar_bateria.py
 --------------------
-Captura el voltaje de los DOS bancos desde el 2º Arduino Mega de medición
-(firmware `examples/medir_bateria.rs`, SOLO Mega + 2 divisores) por Serial y lo
-guarda en CSV con timestamp real. Sirve para medir la AUTONOMÍA por banco.
+Captura voltaje de DOS bancos desde 2o Arduino Mega y guarda CSV.
+Soporta dos firmwares:
+  - medir_bateria (por defecto): emite tiempo_s,V1,V2  (voltaje calculado)
+  - medir_bateria_raw (--raw):    emite tiempo_s,raw1,raw2 (ADC 0-1023)
 
-El firmware emite, a 9600 baud, una cabecera y luego filas:
-    tiempo_s,banco1_V,banco2_V
-    (banco1 = lógica/A0, banco2 = motores/A1)
+El factor del divisor se pasa con --factor (defecto 3.7).
+Calibracion: medir R2 (wiper-GND) con multimetro, factor = (10000+R2)/R2.
 
 Uso:
     pip install pyserial
-    python capturar_bateria.py [PUERTO]
+    python capturar_bateria.py                          # firmware original
+    python capturar_bateria.py --raw --factor 3.7       # raw + factor
+    python capturar_bateria.py /dev/ttyACM0 --raw
+
+Factores separados por banco:
+    python capturar_bateria.py --raw --factor-b1 3.17 --factor-b2 4.69
 """
 
+import argparse
+import sys
 import serial
 import serial.tools.list_ports
 import csv
 import time
 import os
-import sys
 from datetime import datetime
 
-# ── Configuración ──────────────────────────────────────────────
-PUERTO      = None        # None = autodetección, o "/dev/ttyACM0" / "COM3"
-BAUDRATE    = 9600        # debe coincidir con medir_bateria.rs
+# ── Defaults ──────────────────────────────────────────────
+BAUDRATE    = 9600
 ARCHIVO_CSV = "descarga_bateria.csv"
-VOLTAJE_MIN = 11.2        # corte BMS aprox (4 × 2.8 V)
-VOLTAJE_MAX = 16.8        # carga completa (4 × 4.2 V)
-# ───────────────────────────────────────────────────────────────
+VOLTAJE_MIN = 11.2
+VOLTAJE_MAX = 16.8
+# ──────────────────────────────────────────────────────────
 
 
 def detectar_puerto():
@@ -54,12 +59,27 @@ def barra(pct, ancho=12):
 
 
 def main():
-    puerto = (sys.argv[1] if len(sys.argv) > 1 else None) or PUERTO or detectar_puerto()
+    parser = argparse.ArgumentParser(description="Logger de voltaje de baterias desde 2o Mega")
+    parser.add_argument("puerto", nargs="?", help="Puerto serie (auto-detectado si se omite)")
+    parser.add_argument("--raw", action="store_true", help="El firmware emite ADC crudo (0-1023)")
+    parser.add_argument("--factor", type=float, default=None,
+                        help="Factor unico para ambos bancos")
+    parser.add_argument("--factor-b1", type=float, default=None,
+                        help="Factor para banco 1 (A0)")
+    parser.add_argument("--factor-b2", type=float, default=None,
+                        help="Factor para banco 2 (A1)")
+    args = parser.parse_args()
+
+    puerto = args.puerto or detectar_puerto()
     if not puerto:
-        print("X No se encontró ningún puerto Serial. Pasalo como argumento.")
+        print("X No se encontro ningun puerto Serial. Pasalo como argumento.")
         sys.exit(1)
 
+    f1 = args.factor_b1 or args.factor or 3.7
+    f2 = args.factor_b2 or args.factor or 3.7
+    modo = "RAW" if args.raw else "VOLTS"
     print(f"> Puerto      : {puerto}")
+    print(f"> Modo        : {modo}  (factor B1={f1}, B2={f2})")
     print(f"> Guardando en: {os.path.abspath(ARCHIVO_CSV)}")
     print("> Ctrl+C para detener\n")
 
@@ -69,7 +89,7 @@ def main():
         print(f"X No se pudo abrir {puerto}: {e}")
         sys.exit(1)
 
-    time.sleep(2)            # el Mega se resetea al abrir el puerto
+    time.sleep(2)
     ser.reset_input_buffer()
 
     nuevo = not os.path.exists(ARCHIVO_CSV)
@@ -95,22 +115,30 @@ def main():
                     continue
                 try:
                     t_s = int(partes[0])
-                    b1 = float(partes[1])
-                    b2 = float(partes[2])
+                    v1 = float(partes[1])
+                    v2 = float(partes[2])
                 except ValueError:
                     errores += 1
                     continue
-                if not (0.0 <= b1 <= 25.0 and 0.0 <= b2 <= 25.0):
-                    errores += 1
-                    continue
+
+                if args.raw:
+                    if not (0 <= v1 <= 1023 and 0 <= v2 <= 1023):
+                        errores += 1
+                        continue
+                    v1 = v1 * 5.0 / 1023 * f1
+                    v2 = v2 * 5.0 / 1023 * f2
+                else:
+                    if not (0.0 <= v1 <= 25.0 and 0.0 <= v2 <= 25.0):
+                        errores += 1
+                        continue
 
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                p1, p2 = porcentaje(b1), porcentaje(b2)
-                writer.writerow([ts, t_s, f"{b1:.3f}", f"{b2:.3f}",
+                p1, p2 = porcentaje(v1), porcentaje(v2)
+                writer.writerow([ts, t_s, f"{v1:.3f}", f"{v2:.3f}",
                                  f"{p1:.1f}", f"{p2:.1f}"])
                 f.flush()
                 muestras += 1
-                print(f"{ts:<20} {t_s:>5} {b1:>7.3f}V {b2:>7.3f}V  "
+                print(f"{ts:<20} {t_s:>5} {v1:>7.3f}V {v2:>7.3f}V  "
                       f"{barra(p1)} {barra(p2)}")
         except KeyboardInterrupt:
             print(f"\n> Detenido. Muestras: {muestras} | errores: {errores}")

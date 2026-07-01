@@ -39,7 +39,7 @@
 use panic_halt as _;
 use arduino_hal::simple_pwm::{IntoPwmPin, Timer2Pwm, Timer3Pwm, Timer4Pwm, Prescaler};
 use rover_low_level_controller::command_interface::CommandInterface;
-use rover_low_level_controller::motor_control::l298n::{L298NMotor, SixWheelRover};
+use rover_low_level_controller::motor_control::{SixWheelRover, l298n::L298NMotor};
 
 #[arduino_hal::entry]
 fn main() -> ! {
