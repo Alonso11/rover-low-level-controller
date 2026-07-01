@@ -27,12 +27,16 @@ fn main() -> ! {
 
     // Motors are stack-allocated here and live for the entire program (main -> !),
     // satisfying the lifetime invariant of ErasedMotor::new.
-    let mut m0 = L298NMotor::new(pins.d10.into_output().into_pwm(&timer2), pins.d22.into_output().downgrade(), pins.d23.into_output().downgrade(), false);
-    let mut m1 = L298NMotor::new(pins.d9.into_output().into_pwm(&timer2),  pins.d24.into_output().downgrade(), pins.d25.into_output().downgrade(), false);
-    let mut m2 = L298NMotor::new(pins.d5.into_output().into_pwm(&timer3),  pins.d26.into_output().downgrade(), pins.d27.into_output().downgrade(), false);
-    let mut m3 = L298NMotor::new(pins.d2.into_output().into_pwm(&timer3),  pins.d28.into_output().downgrade(), pins.d29.into_output().downgrade(), false);
-    let mut m4 = L298NMotor::new(pins.d6.into_output().into_pwm(&timer4),  pins.d30.into_output().downgrade(), pins.d31.into_output().downgrade(), false);
-    let mut m5 = L298NMotor::new(pins.d7.into_output().into_pwm(&timer4),  pins.d32.into_output().downgrade(), pins.d33.into_output().downgrade(), false);
+    // Layout integrado: sin conflictos con encoders (INT0-INT5) ni sensores.
+    // Timer1/D11 reservado para servo. Timer5 libre para expansión.
+    // Pines de dirección con 2 pines de separación entre cada driver (PA/PC puro GPIO).
+    // D26/D27 libres (separador Driver1-Driver2), D32/D33 libres (separador Driver2-Driver3).
+    let mut m0 = L298NMotor::new(pins.d9.into_output().into_pwm(&timer2),  pins.d22.into_output().downgrade(), pins.d23.into_output().downgrade(), false); // Front Right  (OC2B)
+    let mut m1 = L298NMotor::new(pins.d10.into_output().into_pwm(&timer2), pins.d24.into_output().downgrade(), pins.d25.into_output().downgrade(), false); // Front Left   (OC2A)
+    let mut m2 = L298NMotor::new(pins.d5.into_output().into_pwm(&timer3),  pins.d28.into_output().downgrade(), pins.d29.into_output().downgrade(), false); // Center Right (OC3A)
+    let mut m3 = L298NMotor::new(pins.d6.into_output().into_pwm(&timer4),  pins.d30.into_output().downgrade(), pins.d31.into_output().downgrade(), false); // Center Left  (OC4A)
+    let mut m4 = L298NMotor::new(pins.d7.into_output().into_pwm(&timer4),  pins.d34.into_output().downgrade(), pins.d35.into_output().downgrade(), false); // Rear Right   (OC4B)
+    let mut m5 = L298NMotor::new(pins.d8.into_output().into_pwm(&timer4),  pins.d36.into_output().downgrade(), pins.d37.into_output().downgrade(), false); // Rear Left    (OC4C)
 
     // SAFETY: all motors are stack-allocated in main() -> ! and will never
     // go out of scope, satisfying ErasedMotor's lifetime invariant.

@@ -1,4 +1,5 @@
 # RPi 5 ↔ Arduino Mega 2560 Communication
+<!-- Version: v2.0 -->
 
 This document explains the communication architecture between the
 Raspberry Pi 5 (high-level controller, running a custom Yocto image)
@@ -15,14 +16,30 @@ and how both sides are configured.
 │  Raspberry Pi 5                 │        │  Arduino Mega 2560         │
 │  (Yocto — meta-olympus)         │        │  (rover-low-level-controller)│
 │                                 │  USB   │                            │
-│  rover_bridge.so (Rust/PyO3) ───┼────────┼─── CommandInterface        │
-│  /dev/arduino_mega              │        │    (USART0 / USART1)       │
+│  rover_bridge.so (Rust/PyO3) ───┼────────┼─── USART0 (USB/testing)   │
+│  /dev/arduino_mega              │        │                            │
+│                                 │ GPIO   │                            │
+│  (producción — USART3) ─────────┼────────┼─── USART3 (D14/D15)       │
 └─────────────────────────────────┘        └────────────────────────────┘
 ```
 
 The RPi 5 runs a **custom Yocto Linux image** (not Raspbian). It sends
-ASCII commands over serial and receives text responses. The Arduino
-firmware handles the real-time motor and sensor control loop.
+ASCII commands over serial following the **MSM protocol** and receives
+text responses and telemetry. The Arduino firmware handles the real-time
+motor and sensor control loop.
+
+**USART assignment:**
+
+| USART | Pines | Uso | Estado |
+|-------|-------|-----|--------|
+| USART0 | USB (ATmega16U2) | Desarrollo / testing con cable USB | Activo en v2.7 |
+| USART3 | D14 (TX3) / D15 (RX3) | Producción GPIO directo RPi5 | Pendiente de flash |
+| USART1 | D18 (TX1) / D19 (RX1) | **Libre** — ocupado por encoders INT2/INT3 | No usar |
+| USART2 | D16 (TX2) / D17 (RX2) | Reservado (TF-Luna, no instanciado) | Libre |
+
+> USART3 es el puerto de producción cuando no hay cable USB. El cambio
+> USART0 → USART3 en `main.rs` está pendiente de flash al hardware.
+> Ver `docs/decision-log.md` §Semana 4 — Pendiente.
 
 ---
 
@@ -32,23 +49,23 @@ Several communication interfaces were evaluated:
 
 | Interface | Verdict | Reason |
 |---|---|---|
-| **UART over USB** | **Chosen (primary)** | Zero hardware modification, isolated ground, works with stock Mega |
-| GPIO UART (hardware) | Available (secondary) | Requires level shifter (5V→3.3V); useful if USB port is occupied |
+| **UART over USB** | **Chosen (primary/dev)** | Zero hardware modification, isolated ground, works with stock Mega |
+| GPIO UART (USART3) | Chosen (production) | No USB cable needed in field; requires voltage divider (5V→3.3V) |
 | SPI | Discarded | Requires master/slave negotiation; not ideal for continuous streaming |
 | I²C | Discarded | Multi-master arbitration; not designed for point-to-point command links |
 | Ethernet / Wi-Fi | Out of scope | Requires networking stack; adds latency and complexity |
 
-USB was preferred over direct GPIO UART because:
+USB was preferred during development because:
 - **No voltage level conversion needed** — the USB bridge chip (CH340 or ATmega16U2) handles isolation.
-- **Reliable device identification** — udev rules create a persistent `/dev/arduino_mega` symlink independent of enumeration order.
-- **Arduino bootloader compatibility** — DTR-based reset works over USB; GPIO UART would require a manual reset circuit.
+- **Reliable device identification** — udev rules create a persistent `/dev/arduino_mega` symlink.
+- **Arduino bootloader compatibility** — DTR-based reset works over USB.
 - **Simpler wiring** — one cable for both power and data during development.
 
 ---
 
 ## 3. Physical Connection
 
-### Primary — USB Serial
+### Primary — USB Serial (desarrollo)
 
 ```
 Arduino Mega 2560                     Raspberry Pi 5
@@ -74,94 +91,126 @@ SUBSYSTEM=="tty", KERNEL=="ttyACM*", SYMLINK+="arduino_mega", MODE="0666"
 SUBSYSTEM=="tty", KERNEL=="ttyUSB*", SYMLINK+="arduino_mega", MODE="0666"
 ```
 
-Arduino firmware using USB: `examples/control_motor_usb_l298n.rs`
+Firmware correspondiente: `main.rs` con `arduino_hal::default_serial!(dp, pins, 115200)` → USART0.
 
-```rust
-let serial = arduino_hal::default_serial!(dp, pins, 115200); // USART0
+### Secondary — GPIO UART / USART3 (producción)
+
+Para despliegue en campo sin cable USB. Usa **USART3** (D14/D15) que deja
+libres D18/D19 para los encoders de los motores centrales (INT2/INT3).
+
+> ⚠️ Por qué **no** USART1: D18 y D19 (USART1) son los pines INT3/INT2 del
+> ATmega2560 — necesarios para los encoders del centro. Usar USART1 impide
+> instalar los 6 encoders. Ver `docs/consideration_implementation.md` §6.
+
 ```
-
-### Secondary — GPIO UART (hardware)
-
-Available when the USB port needs to be freed for another peripheral.
-Uses USART1 (D18/D19) and requires a **voltage divider** on the TX line:
-
-```
-Arduino Mega 2560              Raspberry Pi 5
-─────────────────              ──────────────
-D19  RX1 (PD2) ◄──────────── GPIO14 (TX)  pin 8
-D18  TX1 (PD3) ──[1kΩ]──┬──► GPIO15 (RX)  pin 10
+Arduino Mega 2560                     Raspberry Pi 5
+─────────────────                     ──────────────
+D15  RX3 (PJ0) ◄──────────────────── GPIO14 (TX)  pin 8
+D14  TX3 (PJ1) ──[1kΩ]──┬──────────► GPIO15 (RX)  pin 10
                          [2kΩ]
                           │
                          GND
-GND            ◄────────── GND             pin 6
+GND             ◄──────────────────── GND           pin 6
 ```
 
-> ⚠️ The ATmega2560 TX outputs **5V**. The RPi 5 GPIO is **3.3V only**.
-> The divider is mandatory — skipping it will damage the RPi 5 SoC.
-> The RPi 5 TX → Arduino RX direction is safe without conversion
-> (ATmega2560 accepts 3.3V as a valid HIGH).
+> ⚠️ El ATmega2560 TX (D14) emite **5V**. El RPi 5 GPIO es **3.3V only**.
+> El divisor resistivo es obligatorio — sin él el SoC del RPi 5 queda dañado.
+> La dirección RPi 5 TX → Arduino RX es segura sin divisor
+> (ATmega2560 acepta 3.3V como HIGH válido).
 
-The primary UART on RPi 5 (`/dev/ttyAMA0`) is enabled in the Yocto image
-via `enable_uart=1` and `dtoverlay=disable-bt` in `RPI_EXTRA_CONFIG`
-(Bluetooth is disabled to free the hardware UART).
+El UART primario del RPi 5 (`/dev/ttyAMA0`) está habilitado en la imagen
+Yocto via `enable_uart=1` y `dtoverlay=disable-bt` en `RPI_EXTRA_CONFIG`
+(Bluetooth desactivado para liberar el hardware UART).
 
-Arduino firmware using GPIO UART: `examples/control_motor_rpi.rs`
-
+Firmware correspondiente (pendiente):
 ```rust
+// main.rs — cambio pendiente USART0 → USART3
 let serial = arduino_hal::Usart::new(
-    dp.USART1,
-    pins.d19.into_pull_up_input(),   // RX1 ← RPi TX
-    pins.d18.into_output(),          // TX1 → RPi RX (via divider)
+    dp.USART3,
+    pins.d15.into_pull_up_input(),   // RX3 ← RPi TX
+    pins.d14.into_output(),          // TX3 → RPi RX (via divisor)
     115200.into_baudrate(),
 );
 ```
 
 ---
 
-## 4. Command Protocol
+## 4. Protocolo MSM (Master State Machine)
 
-`CommandInterface` (`src/command_interface/mod.rs`) implements a minimal
-ASCII text protocol on top of any ATmega2560 USART peripheral.
+`CommandInterface` (`src/command_interface/mod.rs`) implementa el protocolo
+ASCII MSM sobre cualquier USART del ATmega2560.
 
-### Frame format
-
-```
-<COMMAND>\n
-```
-
-Commands are plain ASCII, terminated by `\n` or `\r`. The internal
-buffer is **32 bytes** — commands longer than 31 bytes are truncated.
-
-### Command set
-
-| Byte | Command | Action |
-|---|---|---|
-| `F` / `f` | Forward | All motors forward |
-| `B` / `b` | Backward | All motors backward |
-| `L` / `l` | Left | Tank-turn left |
-| `R` / `r` | Right | Tank-turn right |
-| `S` / `s` | Stop | All motors stop |
-
-### Response
-
-The Arduino replies with plain text terminated by `\n`:
+### Formato de trama
 
 ```
-OK: Ejecutando ADELANTE\n
+<COMANDO>\n
 ```
+
+Comandos en ASCII plano, terminados con `\n`. Buffer interno de **80 bytes**.
+
+### Comandos RPi5 → Arduino
+
+| Comando | Acción MSM |
+|---------|------------|
+| `PING` | Keepalive — resetea watchdog Arduino (~2 s sin PING → FAULT) |
+| `STB` | Standby (motores parados) |
+| `EXP:<l>:<r>` | Explorar con velocidades -99–99 (positivo=avance, negativo=retroceso; ej: `EXP:80:80`) |
+| `AVD:L` | Girar izquierda (evasión) |
+| `AVD:R` | Girar derecha (evasión) |
+| `RET` | Retroceder |
+| `FLT` | Forzar FAULT desde HLC |
+| `RST` | Reset → Standby |
+
+### Respuestas Arduino → RPi5
+
+| Respuesta | Significado |
+|-----------|-------------|
+| `PONG` | Respuesta a PING |
+| `ACK:<STATE>` | Transición confirmada (ej: `ACK:EXP`, `ACK:STB`) |
+| `ERR:ESTOP` | Comando rechazado (Arduino en FAULT) |
+| `ERR:WDOG` | Watchdog expirado → FAULT |
+| `ERR:UNKNOWN` | Comando no reconocido |
+
+### Telemetría asíncrona (TLM)
+
+El Arduino emite un frame TLM cada ~1 s sin ser solicitado:
+
+```
+TLM:<SAFETY>:<STALL>:<TS>ms:<MV>mV:<MA>mA:<I0>:<I1>:<I2>:<I3>:<I4>:<I5>:<T>C:<B0>:<B1>:<B2>:<B3>:<B4>:<B5>C:<DIST>mm\n
+```
+
+| Campo | Descripción |
+|-------|-------------|
+| SAFETY | Estado: NORMAL / WARN / LIMIT / FAULT |
+| STALL | Máscara stall 6 bits, MSB-first: posición 0 (izq) = RL … posición 5 (der) = FR. Ej: `000001` = solo FR stallado |
+| TS | Tick Arduino en ms (monotónico desde arranque) |
+| MV | Tensión bus batería en mV (INA226, D42/D43). 0 = sin lectura |
+| MA | Corriente total batería en mA con signo (INA226). 0 = sin lectura |
+| I0–I5 | Corrientes motores FR/FL/CR/CL/RR/RL en mA (ACS712) |
+| T | Temperatura ambiente (LM335, A6) en °C |
+| B0–B5 | Temperaturas celdas batería (NTC A7–A12) en °C |
+| DIST | Distancia frontal (VL53L0X, D42/D43) en mm (0 = sin lectura) |
+
+Ejemplo:
+```
+TLM:NORMAL:000000:1000ms:14800mV:1200mA:1150:980:1100:1050:1200:1180:27C:28:29:28:30:29:28C:342mm
+```
+
+El HLC (`rover_bridge.so`) lee los TLM con `recv_tlm()` (timeout 50 ms, no bloqueante)
+y descarta los frames TLM intercalados en `send_command()`.
 
 ### Non-blocking polling
 
-`poll_command()` drains the USART FIFO and returns immediately if no
-complete command has arrived, keeping the control loop unblocked:
+`poll_command()` drena el FIFO USART y retorna inmediatamente si no ha
+llegado una trama completa, manteniendo el loop de control desbloqueado:
 
 ```rust
 loop {
     if interface.poll_command() {
         let cmd = interface.get_command();
-        // handle cmd
+        // handle MSM command
     }
-    // sensor reads, motor updates — run every iteration
+    // sensor reads, motor updates, TLM emission
 }
 ```
 
@@ -169,10 +218,10 @@ loop {
 
 ## 5. RPi 5 Side — Yocto Configuration
 
-The RPi 5 image is built with the **meta-olympus** Yocto layer. Serial
-support is configured via:
+La imagen RPi 5 se construye con la capa **meta-olympus**. El soporte
+serie está configurado vía:
 
-**`build/conf/local.conf`** — hardware UART and Bluetooth override:
+**`build/conf/local.conf`** — UART hardware y Bluetooth:
 ```
 RPI_EXTRA_CONFIG = " \
     enable_uart=1 \n \
@@ -180,43 +229,46 @@ RPI_EXTRA_CONFIG = " \
 "
 ```
 
-**`recipes-core/custom-udev-rules`** — installs `99-arduino.rules` which
-creates the `/dev/arduino_mega` persistent symlink.
+**`recipes-core/custom-udev-rules`** — instala `99-arduino.rules` con
+el symlink persistente `/dev/arduino_mega`.
 
-**`recipes-apps/python3-rover-bridge`** — Rust native extension (PyO3)
-that wraps the serial port with a thread-safe `Mutex` and exposes it
-to Python:
+**`recipes-apps/python3-rover-bridge`** — extensión Rust nativa (PyO3)
+que encapsula el puerto serie con `Mutex` y lo expone a Python:
 
 ```rust
-// Rover::new() in the PyO3 extension
+// Rover::new() en la extensión PyO3
 let port = serialport::new(&port_name, baud_rate)
-    .timeout(Duration::from_millis(100))
+    .timeout(Duration::from_millis(300))
     .open()?;
 
-std::thread::sleep(Duration::from_secs(2)); // Arduino bootloader reset wait
+std::thread::sleep(Duration::from_secs(2)); // espera reset Arduino por DTR
 ```
 
 ```python
-# Python usage
+# Uso desde Python (olympus_controller.py)
 import rover_bridge
 
 rover = rover_bridge.Rover("/dev/arduino_mega", 115200)
-rover.send_command("F")   # sends "F\n"
+resp = rover.send_command("PING")    # → "PONG"
+resp = rover.send_command("STB")     # → "ACK:STB"
+resp = rover.send_command("EXP:80:80")  # → "ACK:EXP"
+
+tlm = rover.recv_tlm()  # → "TLM:NORMAL:..." o None (50 ms timeout)
 ```
 
 ---
 
 ## 6. Baud Rate Calculation
 
-Both sides must match. The ATmega2560 at 16 MHz:
+Ambos lados deben coincidir. El ATmega2560 a 16 MHz:
 
 ```
 UBRR = (f_CPU / (16 × baud)) − 1
      = (16,000,000 / (16 × 115200)) − 1
-     ≈ 8   →  actual baud rate error ≈ 0.16%
+     ≈ 8   →  error baud real ≈ 0.16%
 ```
 
-0.16% is well within the ±2% UART tolerance — no framing errors in practice.
+0.16% está dentro de la tolerancia UART de ±2% — sin errores de framing en la práctica.
 
 ---
 
@@ -224,13 +276,13 @@ UBRR = (f_CPU / (16 × baud)) − 1
 
 | File | Side | Description |
 |---|---|---|
-| `src/command_interface/mod.rs` | Arduino | Protocol buffer and USART wrapper |
-| `examples/control_motor_usb_l298n.rs` | Arduino | USB serial + L298N motor control |
-| `examples/control_motor_rpi.rs` | Arduino | GPIO UART + BTS7960 motor control |
-| `examples/test_rpi_communication.rs` | Arduino | USART1 echo test — verifies GPIO wiring |
-| `examples/validate_protocol.rs` | Arduino | Protocol validator via USB (PC terminal) |
-| `layers/meta-olympus/recipes-core/custom-udev-rules/` | RPi 5 | udev rules for `/dev/arduino_mega` |
-| `layers/meta-olympus/recipes-apps/python3-rover-bridge/` | RPi 5 | Rust/PyO3 serial bridge (`rover_bridge.so`) |
-| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_bridge_interactive.py` | RPi 5 | Script de control manual interactivo (probado en hardware) |
-| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_bridge.py` | RPi 5 | Test automatizado del bridge Rust |
-| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_rover.py` | RPi 5 | Test básico con pyserial (sin Rust) |
+| `src/command_interface/mod.rs` | Arduino | Buffer de protocolo MSM y wrapper USART |
+| `src/state_machine/mod.rs` | Arduino | Máquina de estados maestra (5 estados, watchdog) |
+| `src/main.rs` | Arduino | Loop principal: watchdog → sensores → MSM → motores → TLM |
+| `examples/control_motor_usb_l298n.rs` | Arduino | Test USB USART0 + L298N (desarrollo) |
+| `examples/test_rpi_communication.rs` | Arduino | Echo test USART3 — verifica cableado GPIO |
+| `layers/meta-olympus/recipes-core/custom-udev-rules/` | RPi 5 | Reglas udev para `/dev/arduino_mega` |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/` | RPi 5 | Rust/PyO3 bridge (`rover_bridge.so`) |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_bridge_interactive.py` | RPi 5 | Control manual MSM interactivo |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/test_bridge.py` | RPi 5 | Test automático del bridge Rust |
+| `layers/meta-olympus/recipes-apps/python3-rover-bridge/files/olympus_controller.py` | RPi 5 | Controlador HLC completo (v1.6) |

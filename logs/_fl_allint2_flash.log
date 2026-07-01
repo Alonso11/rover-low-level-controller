@@ -1,0 +1,41 @@
+[1m>> Flash debug_fl_allint → /dev/ttyACM0 [mueve SOLO FL, 6 INT habilitados, CSV fl+fr][0m
+  ROVER ELEVADO. Decide si FL=0 es motor o routing de interrupts (D20/D21).
+RAVEDUDE_PORT=/dev/ttyACM0 \
+RUSTFLAGS="-C target-cpu=atmega2560" \
+cargo +nightly run --release \
+  -Zjson-target-spec \
+  -Zbuild-std=core \
+  --example debug_fl_allint
+warning: feature `abi_avr_interrupt` is declared but not used
+ --> src/lib.rs:3:42
+  |
+3 | #![cfg_attr(target_arch = "avr", feature(abi_avr_interrupt))]
+  |                                          ^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rover-low-level-controller` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `ravedude target/avr-atmega2560/release/examples/debug_fl_allint`
+       Board Arduino Mega 2560
+ Programming target/avr-atmega2560/release/examples/debug_fl_allint => /dev/ttyACM0
+
+avrdude: AVR device initialized and ready to accept instructions
+avrdude: device signature = 0x1e9801 (probably m2560)
+avrdude: reading input file target/avr-atmega2560/release/examples/debug_fl_allint for flash
+         with 8632 bytes in 1 section within [0, 0x21b7]
+         using 34 pages and 72 pad bytes
+avrdude: writing 8632 bytes flash ...
+
+Writing | ################################################## | 100% 1.25s
+
+avrdude: 8632 bytes of flash written
+avrdude: verifying flash memory against target/avr-atmega2560/release/examples/debug_fl_allint
+
+Reading | ################################################## | 100% 0.89s
+
+avrdude: 8632 bytes of flash verified
+
+avrdude done.  Thank you.
+
+  Programmed target/avr-atmega2560/release/examples/debug_fl_allint

@@ -1,0 +1,6 @@
+[debug_all_bts] init - 6 motores TODOS BTS7960 (pinout+inverts reales)
+[debug_all_bts] ROVER ELEVADO. arranque en 3...2...1
+[debug_all_bts] init - 6 motores TODOS BTS7960 (pinout+inverts reales)
+[debug_all_bts] ROVER ELEVADO. arranque en 3...2...1
+ADELANTE 30% (3s) -> FR FL CR CL RR RL (mismo sentido, todos BTS)
+STOP -> los 6 parados y deshabilitados. Resetear Mega para repetir.

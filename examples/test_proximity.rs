@@ -5,12 +5,13 @@
 //! ultrasónico y un sensor LiDAR para la detección de obstáculos en el Rover.
 //!
 //! ## Conexiones Sugeridas (Arduino Mega 2560):
-//! * **HC-SR04 (Ultrasonido):** 
-//!     - Trigger -> Pin Digital D14
-//!     - Echo    -> Pin Digital D15
+//! * **HC-SR04 (Ultrasonido):**
+//!     - Trigger -> Pin Digital D38 (PD7)
+//!     - Echo    -> Pin Digital D39 (PG2)
 //! * **TF-Luna (LiDAR):**
 //!     - RX (del sensor) -> Pin D16 (TX2 del Arduino)
 //!     - TX (del sensor) -> Pin D17 (RX2 del Arduino)
+//! * **Nota:** D14/D15 están reservados para RPi5 (USART3). No usar para HC-SR04.
 //! * **Debug Serial (USB):**
 //!     - 115200 baudios vía puerto USB estándar.
 
@@ -33,10 +34,10 @@ fn main() -> ! {
     // Configuración del sensor HC-SR04 (Ultrasonido)
     // Utilizamos forget_imode() para convertir el pin Echo en un tipo de entrada genérico.
     let mut hc_sr04 = HCSR04::new(
-        pins.d14.into_output(),
-        pins.d15.into_floating_input().forget_imode(),
+        pins.d38.into_output(),
+        pins.d39.into_floating_input().forget_imode(),
     );
-    ufmt::uwriteln!(&mut serial, "[INFO] HC-SR04 listo en pines D14(T)/D15(E)\r").unwrap();
+    ufmt::uwriteln!(&mut serial, "[INFO] HC-SR04 listo en pines D38(T)/D39(E)\r").unwrap();
 
     // Configuración del sensor TF-Luna (LiDAR) en el puerto Serial 2 (USART2)
     // El LiDAR requiere 115200 baudios para su comunicación por defecto.

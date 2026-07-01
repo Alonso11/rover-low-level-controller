@@ -6,7 +6,7 @@
 //! convivan en el mismo array.
 
 use crate::motor_control::Motor;
-use crate::sensors::encoder::Encoder;
+use crate::sensors::Encoder;
 
 /// Estructura que representa un canal de tracción (Motor + Encoder).
 /// Usamos un rasgo dinámico (Box no disponible, así que usamos tipos genéricos

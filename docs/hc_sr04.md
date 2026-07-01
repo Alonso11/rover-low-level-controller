@@ -1,49 +1,123 @@
-# Sensor Ultrasónico HC-SR04
+# Driver HC-SR04 — Sensor Ultrasónico
+<!-- Version: v2.0 -->
 
-El **HC-SR04** es un sensor de proximidad ultrasónico que utiliza el tiempo de vuelo (ToF) de ondas sonoras para determinar la distancia a un objeto.
+Driver en `src/sensors/hc_sr04.rs` (v1.2) para el sensor ultrasónico HC-SR04.
+Conectado a **D38 (Trigger)** y **D39 (Echo)** en el Arduino Mega 2560.
 
-## Especificaciones Técnicas
+---
+
+## Especificaciones técnicas
+
 | Parámetro | Valor |
-| :--- | :--- |
-| Voltaje de Operación | 5V DC |
-| Corriente de Operación | 15 mA |
-| Frecuencia ultrasónica | 40 kHz |
-| Rango Máximo | 400 cm (4 m) |
-| Rango Mínimo | 2 cm |
-| Ángulo de medición | < 15° |
-| Resolución | 0.3 cm |
+|-----------|-------|
+| Rango de medición | 2 cm – 400 cm |
+| Precisión | ±3 mm |
+| Ángulo de apertura | ~15° |
+| Voltaje de operación | 5V |
+| Interfaz | GPIO: Trigger (output) + Echo (input) |
+| Tiempo de ciclo mínimo | ≥ 60 ms entre disparos |
 
-## Principio de Funcionamiento
-1. Se envía un pulso de nivel alto de **10µs** al pin `Trigger`.
-2. El módulo envía automáticamente ocho ráfagas de 40 kHz y detecta si hay un pulso de retorno.
-3. Si hay una señal de retorno, el pin `Echo` se pone en ALTO. 
-4. La duración de este pulso ALTO es el tiempo que tarda el sonido en ir y volver del objeto.
+---
 
-### Fórmula de Cálculo
-La distancia se calcula multiplicando el tiempo por la velocidad del sonido (343 m/s o 0.0343 cm/µs) y dividiendo por 2 (ida y vuelta).
+## API del driver
 
-$$Distancia (mm) = \frac{Tiempo (µs) \times 0.343}{2}$$
+### Construcción
 
-## Implementación en el Proyecto
-En este proyecto, el driver se encuentra en `src/sensors/hc_sr04.rs` e implementa el trait `ProximitySensor`.
-
-### Conexión en Arduino Mega 2560
-| Pin Sensor | Pin Arduino | Función |
-| :--- | :--- | :--- |
-| VCC | 5V | Alimentación |
-| Trig | **D14** | Disparo del pulso |
-| Echo | **D15** | Recepción del eco |
-| GND | GND | Tierra |
-
-### Ejemplo de Código
 ```rust
-let mut hc_sr04 = HCSR04::new(pins.d14.into_output(), pins.d15.into_floating_input().forget_imode());
-if let Some(dist) = hc_sr04.get_distance_mm() {
-    // Uso de la distancia en mm
+// Default: timeout completo de 30 000 µs (~4 m de rango)
+let hcsr04 = HCSR04::new(trigger_pin, echo_pin);
+
+// Con timeout reducido para limitar bloqueo del loop (recomendado)
+let hcsr04 = HCSR04::new(trigger_pin, echo_pin).with_timeout(HC_ECHO_TIMEOUT_US);
+```
+
+### Lectura
+
+```rust
+match hcsr04.measure_mm() {
+    Ok(mm)                        => { /* distancia válida */ }
+    Err(SensorError::Timeout)     => { /* eco fuera del rango configurado */ }
+    Err(SensorError::OutOfRange)  => { /* distancia fuera de 2–4 000 mm */ }
+    _                             => {}
 }
 ```
 
-## Notas de Implementación
-- El driver utiliza `arduino_hal::delay_us` para medir la duración del pulso.
-- Se ha implementado un **Timeout** de 30ms (equivalente a una distancia fuera de rango de ~5 metros) para evitar bloqueos del procesador si no se recibe eco.
-- Se recomienda un intervalo de al menos 60ms entre mediciones para evitar interferencias.
+El tipo de retorno es `Result<u16, SensorError>`. En `main.rs` se usa con
+`if let Ok(mm)` para ignorar los errores transitórios y solo actuar cuando
+hay una lectura válida.
+
+---
+
+## Control de latencia — `with_timeout()`
+
+La espera del eco es bloqueante (busy-wait con `delay_us(1)` por iteración).
+Sin límite, un obstáculo a 4 m causa ~23 ms de bloqueo, excediendo el ciclo
+de 20 ms del loop principal.
+
+`with_timeout(µs)` limita la espera al rango que interesa:
+
+| Distancia máx | Tiempo eco aprox | Timeout sugerido | Bloqueo máx |
+|---------------|-----------------|------------------|-------------|
+| 200 mm (emergencia) | ~1 166 µs | 1 750 µs | ~1.75 ms |
+| 500 mm | ~2 916 µs | 3 200 µs | ~3.2 ms |
+| 4 000 mm (full) | ~23 326 µs | 30 000 µs (defecto) | ~30 ms |
+
+Fórmula: `timeout_us = distance_mm × 10_000 / 1_715`
+
+El firmware configura `HC_ECHO_TIMEOUT_US = 1_750` µs en `src/config.rs`,
+reduciendo el bloqueo máximo de ~30 ms a ~1.75 ms (17×).
+
+Objetos más lejanos que el timeout provocan `Err(SensorError::Timeout)`,
+que el loop principal ignora (no hay obstáculo relevante en ese rango).
+
+---
+
+## Integración en el loop principal
+
+El HC-SR04 se lee cada `HC_READ_PERIOD = 5` ciclos (~100 ms, no cada 20 ms)
+porque la medición es bloqueante. A 0,5 m/s el rover avanza ~5 cm entre
+lecturas — margen aceptable para el umbral de emergencia de 200 mm.
+
+```rust
+// Fragmento de main.rs
+if let Ok(mm) = hcsr04.measure_mm() {
+    if mm < HC_EMERGENCY_MM {   // 200 mm
+        let resp = msm.process(Command::Fault);
+        sync_drive!(rover, msm);
+        iface.send_response(format_response(resp, &mut resp_buf));
+    }
+}
+```
+
+---
+
+## Capas de protección de distancia (contexto)
+
+| Sensor | Umbral | Acción | Latencia |
+|--------|--------|--------|----------|
+| HC-SR04 (D38/D39) | < 200 mm | FAULT inmediato | ~100 ms |
+| VL53L0X (D42/D43) | < 150 mm | FAULT inmediato | ~20 ms |
+| RPi5 + cámara | < 300 mm | RET proactivo | ~150 ms |
+
+---
+
+## Notas de hardware
+
+- **Ruido eléctrico**: el HC-SR04 es sensible a inestabilidad en 5V. Añadir
+  un condensador de desacoplo 100 nF en los terminales de alimentación.
+- **Pulso de trigger**: el driver usa 20 µs (en lugar del mínimo de 10 µs)
+  para mejorar compatibilidad con variantes de hardware lentas.
+- **Pre-pulso bajo**: 10 µs de LOW antes del trigger para limpiar la línea.
+- **Ángulo**: el HC-SR04 tiene un haz de ~15°; puede detectar objetos que el
+  VL53L0X (haz puntual) no ve.
+
+---
+
+## Diagnóstico
+
+| Síntoma | Causa probable | Solución |
+|---------|---------------|----------|
+| `Err(Timeout)` continuo | Sensor desconectado o objeto > rango configurado | Verificar cableado D38/D39; aumentar `HC_ECHO_TIMEOUT_US` |
+| `Err(OutOfRange)` frecuente | Objeto muy cercano (< 2 cm) o reflejo lateral | Normal en espacios cerrados muy pequeños |
+| Lecturas inestables (±50 mm) | Ruido en 5V o superficie reflectora irregular | Condensador desacoplo; promediar N lecturas |
+| FAULT espurio al arrancar | Eco residual del ciclo anterior | El driver pone el trigger a LOW 10 µs antes de disparar — verificar timing |

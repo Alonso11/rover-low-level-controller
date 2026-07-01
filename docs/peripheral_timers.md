@@ -1,4 +1,4 @@
-<!-- Version: v1.1 -->
+<!-- Version: v1.3 -->
 # ATmega2560 Hardware Timers
 
 This document details the hardware timers available on the ATmega2560 for
@@ -8,14 +8,14 @@ PWM generation, with focus on motor control.
 
 The ATmega2560 has **6 timers** (Timer0–Timer5):
 
-| Timer | Bits | PWM Channels | Recommended Use |
-|-------|------|--------------|-----------------|
-| Timer0 | 8  | 2 | **System reserved** — `delay_ms` / `delay_us` |
-| Timer1 | 16 | 3 | Available (D11, D12, D13) |
-| Timer2 | 8  | 2 | **Motor 1 — Front** (D10, D9) |
-| Timer3 | 16 | 3 | **Motor 2 — Center** (D5, D2, D3) |
-| Timer4 | 16 | 3 | **Motor 3 — Rear** (D6, D7, D8) |
-| Timer5 | 16 | 3 | Available (D46, D45, D44) |
+| Timer | Bits | PWM Channels | Assigned Use |
+|-------|------|--------------|--------------|
+| Timer0 | 8  | 2 | **Sistema** — `delay_ms` / `delay_us` (no tocar) |
+| Timer1 | 16 | 3 | **Servo** — D11 (OC1A) a 50Hz |
+| Timer2 | 8  | 2 | **Motores Frontales** — D9 (OC2B), D10 (OC2A) |
+| Timer3 | 16 | 3 | **Motor Central Derecho** — D5 (OC3A) |
+| Timer4 | 16 | 3 | **Central Izq + Traseros** — D6 (OC4A), D7 (OC4B), D8 (OC4C) |
+| Timer5 | 16 | 3 | **Libre** — D44 (OC5C), D45 (OC5B), D46 (OC5A) |
 
 **Total: 16 PWM channels available** (Timer0 excluded from motor use)
 
@@ -93,19 +93,20 @@ Available prescalers in `arduino-hal`:
 
 ## 5. Usage Rules
 
-### One timer per L298N driver
+### Un timer por motor
 
-Each L298N controls 2 motors and must use a **single timer** (both channels
-of that timer). Two drivers must never share a timer to avoid duty-cycle
-register conflicts.
+Cada motor usa un canal PWM independiente de su timer. Dos motores pueden
+compartir el mismo timer (p.ej. Center Right y Center Left en Timer3) siempre
+que usen **canales distintos** (OC3A y OC3B), ya que cada canal tiene su
+propio registro OCR. Dos motores **nunca deben compartir el mismo canal**.
 
 ### Motor configurations
 
-| Config | Front | Center | Rear |
-|--------|-------|--------|------|
-| 2 motors (1 driver) | Timer2 (D10, D9) | — | — |
-| 4 motors (2 drivers) | Timer2 (D10, D9) | Timer3 (D5, D2) | — |
-| 6 motors (3 drivers) | Timer2 (D10, D9) | Timer3 (D5, D2) | Timer4 (D6, D7) |
+| Config | Front Right | Front Left | Center R | Center L | Rear Right | Rear Left |
+|--------|-------------|------------|----------|----------|------------|-----------|
+| 2 motors | Timer2/D9 | Timer2/D10 | — | — | — | — |
+| 4 motors | Timer2/D9 | Timer2/D10 | Timer3/D5 | Timer4/D6 | — | — |
+| 6 motors | Timer2/D9 | Timer2/D10 | Timer3/D5 | Timer4/D6 | Timer4/D7 | Timer4/D8 |
 
 ### Do not use Timer0
 
@@ -117,16 +118,23 @@ Repurposing it will corrupt all timing functions.
 ```rust
 use arduino_hal::simple_pwm::{Timer2Pwm, Timer3Pwm, Timer4Pwm, Prescaler};
 
-let timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64); // Front
-let timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64); // Center
-let timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64); // Rear
+// Timer1 reservado para servo (50Hz hardware PWM en D11)
+let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64); // Motores frontales
+let mut timer3 = Timer3Pwm::new(dp.TC3, Prescaler::Prescale64); // Motor central derecho
+let mut timer4 = Timer4Pwm::new(dp.TC4, Prescaler::Prescale64); // Central izq + traseros
 
-// Front right: D10 (OC2A)
-let fr_pwm = pins.d10.into_output().into_pwm(&timer2);
-// Center right: D5 (OC3A)
-let cr_pwm = pins.d5.into_output().into_pwm(&timer3);
-// Rear right: D6 (OC4A)
-let rr_pwm = pins.d6.into_output().into_pwm(&timer4);
+// Front right:   D9  (OC2B, Timer2, PH6)
+let fr_pwm = pins.d9.into_output().into_pwm(&mut timer2);
+// Front left:    D10 (OC2A, Timer2, PB4)
+let fl_pwm = pins.d10.into_output().into_pwm(&mut timer2);
+// Center right:  D5  (OC3A, Timer3, PE3)
+let cr_pwm = pins.d5.into_output().into_pwm(&mut timer3);
+// Center left:   D6  (OC4A, Timer4, PH3) — D2/INT4 libre para encoder
+let cl_pwm = pins.d6.into_output().into_pwm(&mut timer4);
+// Rear right:    D7  (OC4B, Timer4, PH4)
+let rr_pwm = pins.d7.into_output().into_pwm(&mut timer4);
+// Rear left:     D8  (OC4C, Timer4, PH5)
+let rl_pwm = pins.d8.into_output().into_pwm(&mut timer4);
 ```
 
 ## 7. Known Conflicts
