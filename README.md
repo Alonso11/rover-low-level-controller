@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Focus: Systems Engineering](https://img.shields.io/badge/Focus-Systems%20Engineering-blue.svg)](#)
 [![Rust: nightly](https://img.shields.io/badge/Rust-nightly-orange.svg)](./rust-toolchain.toml)
-[![Target: ATmega2560](https://img.shields.io/badge-Target-ATmega2560-teal.svg)](https://www.microchip.com/en-us/product/atmega2560)
+[![Target: ATmega2560](https://img.shields.io/badge/Target-ATmega2560-teal.svg)](https://www.microchip.com/en-us/product/atmega2560)
 [![CI: Rust (AVR)](https://github.com/Alonso11/rover-low-level-controller/actions/workflows/rust.yml/badge.svg)](https://github.com/Alonso11/rover-low-level-controller/actions/workflows/rust.yml)
 
 > **TL;DR** — Modular firmware for a 6-wheel rover on the **ATmega2560** (Arduino
@@ -476,9 +476,9 @@ Distributed under the MIT License. See the `LICENSE` file for details.
 
 ## Author
 
-**Fabián Alonso Gómez Quesada**
-Instituto Tecnológico de Costa Rica (TEC)
-School of Electronics Engineering
+**Fabián Alonso Gómez Quesada**<br>
+Instituto Tecnológico de Costa Rica (TEC)<br>
+School of Electronics Engineering<br>
 SETEC Lab — Space Systems Laboratory
 
 ---
